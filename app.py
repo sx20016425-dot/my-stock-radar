@@ -4,18 +4,17 @@ import requests
 import yfinance as yf
 import time
 import random
-import datetime
 
-st.set_page_config(page_title="Alpha Trader v21 CONTROL DECK", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v22 INSTITUTIONAL EXTENDED", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# STATE (完全保留 v20)
+# STATE (全部保留 + 擴充)
 # =========================
-for k in ["last_book", "alerts", "trades", "signals", "flow_state"]:
+for k in ["last_book", "alerts", "trades", "signals", "flow_state", "trend"]:
     if k not in st.session_state:
-        st.session_state[k] = {} if k == "flow_state" else [] if k != "last_book" else None
+        st.session_state[k] = [] if k in ["alerts","trades","signals"] else None if k=="last_book" else {}
 
 # =========================
 # FORMAT
@@ -27,7 +26,7 @@ def f2(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL MARKET (TOP BAR)
+# 🌍 GLOBAL MARKET (不動)
 # =========================
 @st.cache_data(ttl=5)
 def fetch_global():
@@ -39,18 +38,18 @@ def fetch_global():
     }
 
     out = {}
-    for k, v in idx.items():
+    for k,v in idx.items():
         try:
             df = yf.Ticker(v).history(period="2d")
             p = float(df["Close"].iloc[-1])
             prev = float(df["Close"].iloc[-2])
             out[k] = (p, (p-prev)/prev*100)
         except:
-            out[k] = (None, None)
+            out[k] = (None,None)
     return out
 
 # =========================
-# STOCK ENGINE
+# STOCK FETCH (不動)
 # =========================
 def fetch_stock(symbol):
     try:
@@ -66,165 +65,179 @@ def fetch_stock(symbol):
 
     df = yf.Ticker(f"{symbol}.TW").history(period="1d")
     if df is None or df.empty:
-        return None, "NONE"
+        return None,"NONE"
 
     p = float(df["Close"].iloc[-1])
 
     return {
-        "bids": [{"price": p-i*0.5, "size": random.randint(10,120)} for i in range(5)],
-        "asks": [{"price": p+i*0.5, "size": random.randint(10,120)} for i in range(5)],
-        "lastPrice": p,
-        "lastSize": random.randint(1,80)
-    }, "SIM"
+        "bids":[{"price":p-i*0.5,"size":random.randint(10,120)} for i in range(5)],
+        "asks":[{"price":p+i*0.5,"size":random.randint(10,120)} for i in range(5)],
+        "lastPrice":p,
+        "lastSize":random.randint(1,80)
+    },"SIM"
 
 # =========================
-# BOOK
+# BOOK VIEW (不動)
 # =========================
-def safe_book(bids, asks):
+def book(bids,asks):
     bids = bids + [{} for _ in range(5-len(bids))]
     asks = asks + [{} for _ in range(5-len(asks))]
 
     return pd.DataFrame({
-        "買價": [x.get("price") for x in bids],
-        "買量": [x.get("size") for x in bids],
-        "賣價": [x.get("price") for x in asks],
-        "賣量": [x.get("size") for x in asks],
+        "買價":[x.get("price") for x in bids],
+        "買量":[x.get("size") for x in bids],
+        "賣價":[x.get("price") for x in asks],
+        "賣量":[x.get("size") for x in asks],
     })
 
 # =========================
-# DELTA ENGINE
+# 📈 DELTA (保留)
 # =========================
 def delta(curr, prev):
     if not prev:
         return pd.DataFrame()
 
-    rows = []
+    rows=[]
     for i in range(2):
-        cb = curr["bids"][i]
-        pb = prev["bids"][i]
-        ca = curr["asks"][i]
-        pa = prev["asks"][i]
+        cb=curr["bids"][i]
+        pb=prev["bids"][i]
+        ca=curr["asks"][i]
+        pa=prev["asks"][i]
 
         rows.append([
-            cb["price"], cb["size"] - pb["size"],
-            ca["price"], ca["size"] - pa["size"]
+            cb["price"],cb["size"]-pb["size"],
+            ca["price"],ca["size"]-pa["size"]
         ])
 
-    return pd.DataFrame(rows, columns=["買價","買量Δ","賣價","賣量Δ"])
+    return pd.DataFrame(rows,columns=["買價","買Δ","賣價","賣Δ"])
 
 # =========================
-# FLOW ENGINE (保留)
+# 🧠 INSTITUTIONAL LAYER (新增核心)
 # =========================
-def flow(curr, prev):
-    out = []
+def institutional(curr, prev):
+    sig=[]
+
     if not prev:
-        return out
+        return sig
 
     for i in range(2):
-        cb = curr["bids"][i]
-        pb = prev["bids"][i]
-        ca = curr["asks"][i]
-        pa = prev["asks"][i]
 
-        if cb["size"] > pb["size"]*1.5:
-            out.append("🟢 買單加壓")
+        cb=curr["bids"][i]
+        pb=prev["bids"][i]
 
-        if ca["size"] > pa["size"]*1.5:
-            out.append("🔴 賣壓加單")
+        ca=curr["asks"][i]
+        pa=prev["asks"][i]
 
-        if cb["size"] < pb["size"]*0.5:
-            out.append("⚪ 買單抽離")
+        # 🧲 吸籌
+        if cb["size"] > pb["size"]*2:
+            sig.append("🟢 主力持續吸籌")
 
-        if ca["size"] < pa["size"]*0.5:
-            out.append("⚪ 賣單撤單")
+        # 🔴 壓盤
+        if ca["size"] > pa["size"]*2:
+            sig.append("🔴 主力壓盤加重")
 
-    return out
+        # ⚡ 假流動性
+        if cb["size"] < pb["size"]*0.4:
+            sig.append("⚠️ 買盤瞬間消失（假跌破）")
+
+        if ca["size"] < pa["size"]*0.4:
+            sig.append("⚠️ 賣盤瞬間撤單（假突破）")
+
+    # =========================
+    # ⚡ 成交 vs 掛單壓力
+    # =========================
+    bid1=curr["bids"][0]["size"]
+    ask1=curr["asks"][0]["size"]
+
+    if bid1 > ask1*2:
+        sig.append("🚀 買方攻擊性主導")
+
+    if ask1 > bid1*2:
+        sig.append("📉 賣方壓制盤面")
+
+    return sig
 
 # =========================
-# UI HEADER (移除標題 ✔)
+# UI
 # =========================
+st.title("🏛️ Alpha-Trader v22 INSTITUTIONAL FLOW EXTENSION")
 
-symbol = st.text_input("股票代碼", "2330")
+symbol = st.text_input("股票代碼","2330")
 
 # =========================
-# 🌍 TOP GLOBAL MARKET (縮小 + 最上)
+# 🌍 GLOBAL TOP
 # =========================
-g = fetch_global()
-
-top_cols = st.columns(4)
+g=fetch_global()
+c=st.columns(4)
 
 for i,(k,v) in enumerate(g.items()):
-    p,pct = v
-    with top_cols[i]:
-        st.metric(k, f2(p), f"{pct:.2f}%")
+    p,pct=v
+    c[i].metric(k,f2(p),f"{pct:.2f}%")
 
 st.divider()
 
 # =========================
 # STOCK
 # =========================
-snap, mode = fetch_stock(symbol)
+snap,mode=fetch_stock(symbol)
 
 if not snap:
     st.error("NO DATA")
     st.stop()
 
-bids = snap["bids"]
-asks = snap["asks"]
+bids=snap["bids"]
+asks=snap["asks"]
 
-lp = snap["lastPrice"]
-lv = snap["lastSize"]
-
-# =========================
-# LAYOUT CORE (你的要求重排)
-# =========================
-left, right = st.columns([1, 2])
+lp=snap["lastPrice"]
+lv=snap["lastSize"]
 
 # =========================
-# LEFT COLUMN
+# LAYOUT (不重構，只擴充)
 # =========================
+left,right=st.columns([1,2])
+
 with left:
+    st.subheader("📊 五檔")
+    st.dataframe(book(bids,asks),use_container_width=True)
 
-    st.subheader("📊 五檔（盤口）")
-    st.dataframe(safe_book(bids,asks), use_container_width=True)
+with right:
+
+    r1,r2=st.columns(2)
+
+    with r1:
+        st.subheader("📈 Delta")
+        st.dataframe(delta(snap,st.session_state.last_book),use_container_width=True)
+
+    with r2:
+        st.subheader("🧠 機構監控層")
+
+        inst=institutional(snap,st.session_state.last_book)
+
+        for s in inst:
+            st.session_state.alerts.insert(0,s)
+
+        st.code("\n".join(st.session_state.alerts[:25]) or "無")
 
 # =========================
-# RIGHT COLUMN SPLIT
+# METRICS
 # =========================
-right_top, right_bottom = st.columns([1,1])
+st.divider()
 
-# =========================
-# RIGHT TOP (DELTA)
-# =========================
-with right_top:
+m1,m2,m3=st.columns(3)
 
-    st.subheader("📈 掛單變化（Delta）")
-    st.dataframe(delta(snap, st.session_state.last_book), use_container_width=True)
+with m1:
+    st.metric("成交價",f2(lp))
 
-# =========================
-# RIGHT BOTTOM (CONTROL WALL)
-# =========================
-with right_bottom:
+with m2:
+    st.metric("成交量",lv)
 
-    st.subheader("🧠 監控狀態牆")
-
-    flow_data = flow(snap, st.session_state.last_book)
-
-    for f in flow_data:
-        st.session_state.alerts.insert(0, f)
-
-    st.code("\n".join(st.session_state.alerts[:25]) or "無")
-
-    st.divider()
-
-    st.metric("成交價", f2(lp))
-    st.metric("成交量", lv)
-    st.metric("模式", mode)
+with m3:
+    st.metric("模式",mode)
 
 # =========================
 # SAVE STATE
 # =========================
-st.session_state.last_book = snap
+st.session_state.last_book=snap
 
 # =========================
 # LOOP
