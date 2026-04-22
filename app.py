@@ -3,209 +3,207 @@ import pandas as pd
 import requests
 import yfinance as yf
 import time
-import random
 import datetime
+import random
 
-st.set_page_config(page_title="Alpha-Trader v15 Phase 3", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v16 Institutional Lite", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # ======================
-# 初始化
+# INIT
 # ======================
-for key, default in {
+for k, v in {
     "last_book": None,
     "alerts": [],
     "trades": [],
+    "pressure": []
 }.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # ======================
-# 工具
+# FORMAT
 # ======================
-def fmt(x):
-    return "--" if x is None else f"{x:,.0f}"
-
-def fmt_pct(x):
-    return "--" if x is None else f"{x:.2f}%"
+def f2(x):
+    return "--" if x is None else f"{float(x):.2f}"
 
 # ======================
-# 市場
-# ======================
-@st.cache_data(ttl=3)
-def fetch_global():
-    symbols = {
-        "日經": "^N225",
-        "恆生": "^HSI",
-        "韓國": "^KS11",
-        "加權": "^TWII"
-    }
-    data = {}
-    for k, v in symbols.items():
-        try:
-            df = yf.Ticker(v).history(period="1d")
-            p = df['Close'].iloc[-1]
-            prev = df['Close'].iloc[-2] if len(df) > 1 else p
-            pct = (p - prev) / prev * 100
-            data[k] = (p, pct)
-        except:
-            data[k] = (None, None)
-    return data
-
-# ======================
-# 個股
+# DATA
 # ======================
 def fetch_stock(symbol):
     try:
         url = f"https://api.fugle.tw/marketdata/v1.0/stock/snapshot/quotes/{symbol}"
         r = requests.get(url, headers={"X-API-KEY": API_KEY}, timeout=2)
         if r.status_code == 200:
-            data = r.json()
-            if data.get("bids") and data.get("asks"):
-                return data
+            d = r.json()
+            if d.get("bids") and d.get("asks"):
+                return d
     except:
         pass
 
     # fallback
-    ticker = yf.Ticker(f"{symbol}.TW")
-    df = ticker.history(period="1d")
-    if not df.empty:
-        price = df['Close'].iloc[-1]
-        bids, asks = [], []
-        for i in range(5):
-            bids.append({"price": price - i*0.5, "size": random.randint(10,100)})
-            asks.append({"price": price + i*0.5, "size": random.randint(10,100)})
-        return {
-            "bids": bids,
-            "asks": asks,
-            "lastPrice": price,
-            "lastSize": random.randint(1,50)
-        }
+    try:
+        df = yf.Ticker(f"{symbol}.TW").history(period="1d")
+        if not df.empty:
+            p = float(df["Close"].iloc[-1])
+
+            bids = [{"price": p - i*0.5, "size": random.randint(10,80)} for i in range(5)]
+            asks = [{"price": p + i*0.5, "size": random.randint(10,80)} for i in range(5)]
+
+            return {
+                "bids": bids,
+                "asks": asks,
+                "lastPrice": p,
+                "lastSize": random.randint(1,50)
+            }
+    except:
+        pass
 
     return None
 
 # ======================
-# 主力行為判斷（核心）
+# MICROSTRUCTURE ENGINE
 # ======================
-def detect_order_flow(curr_b, curr_a, last_book, threshold):
+
+def liquidity_shift(curr, prev):
+    if not prev:
+        return []
+
     signals = []
 
-    if not last_book:
-        return signals
+    for p, s in curr.items():
+        old = prev.get(p, 0)
+        diff = s - old
 
-    # 只看前3檔（戰區）
-    for i in range(min(3, len(curr_a))):
-        p = curr_a[i]['price']
-        s = curr_a[i]['size']
-        prev = last_book['a'].get(p, 0)
-        diff = s - prev
-
-        if abs(diff) >= threshold:
-            if diff > 0:
-                signals.append(f"🔴 壓單增加 {p} +{diff}")
-            else:
-                signals.append(f"⚪ 賣單撤單 {p} {diff}")
-
-    for i in range(min(3, len(curr_b))):
-        p = curr_b[i]['price']
-        s = curr_b[i]['size']
-        prev = last_book['b'].get(p, 0)
-        diff = s - prev
-
-        if abs(diff) >= threshold:
-            if diff > 0:
-                signals.append(f"🟢 撐單增加 {p} +{diff}")
-            else:
-                signals.append(f"⚪ 買單撤單 {p} {diff}")
+        if diff < -30:
+            signals.append(("PULL", p, diff))
+        elif diff > 30:
+            signals.append(("STACK", p, diff))
 
     return signals
 
 
-def detect_trade_action(lp, lv, best_bid, best_ask):
-    signals = []
+def aggression_score(lp, lv, bids, asks):
+    bid_sum = sum(bids.values())
+    ask_sum = sum(asks.values())
 
-    if lp >= best_ask and lv > 20:
-        signals.append(f"🚀 吃賣單 {lv}張 @ {lp}")
+    total = bid_sum + ask_sum + 1
 
-    elif lp <= best_bid and lv > 20:
-        signals.append(f"💀 殺買單 {lv}張 @ {lp}")
+    imbalance = (bid_sum - ask_sum) / total * 100
 
-    return signals
+    if lv > 30:
+        imbalance += 10 if lp > max(bids.keys(), default=0) else -10
+
+    return max(0, min(100, 50 + imbalance))
+
+
+def compression_zone(bids, asks):
+    if len(bids) < 2 or len(asks) < 2:
+        return False
+
+    bid_spread = max(bids.keys()) - min(bids.keys())
+    ask_spread = max(asks.keys()) - min(asks.keys())
+
+    return bid_spread < 1 and ask_spread < 1
 
 # ======================
 # UI
 # ======================
-st.title("🏛️ Alpha-Trader v15 Phase 3")
+st.title("🏛️ Alpha-Trader v16 Institutional Lite")
 
 symbol = st.text_input("股票代碼", "2330")
-threshold = st.number_input("大單門檻", 50)
 
-# ===== 市場 =====
-cols = st.columns(4)
-global_data = fetch_global()
+snap = fetch_stock(symbol)
 
-for i, (k, v) in enumerate(global_data.items()):
-    p, pct = v
-    cols[i].metric(k, fmt(p), fmt_pct(pct))
+if not snap:
+    st.error("無資料")
+    st.stop()
+
+bids = snap["bids"]
+asks = snap["asks"]
+
+curr_b = {x["price"]: x["size"] for x in bids}
+curr_a = {x["price"]: x["size"] for x in asks}
+
+# ======================
+# DISPLAY BOOK
+# ======================
+df = pd.DataFrame(bids).rename(columns={"price":"買價","size":"買量"})
+df2 = pd.DataFrame(asks).rename(columns={"price":"賣價","size":"賣量"})
+
+st.dataframe(pd.concat([df, df2], axis=1), use_container_width=True)
+
+# ======================
+# MICROSTRUCTURE ANALYSIS
+# ======================
+
+lp = snap.get("lastPrice")
+lv = snap.get("lastSize")
+
+# 1. 流動性變化
+liq_signals = liquidity_shift(curr_a, st.session_state.last_book["a"] if st.session_state.last_book else {})
+
+# 2. 成交推動力
+score = aggression_score(lp, lv, curr_b, curr_a)
+
+# 3. 壓縮區
+is_compress = compression_zone(curr_b, curr_a)
+
+# ======================
+# ALERT ENGINE
+# ======================
+
+for s in liq_signals:
+    typ, price, diff = s
+
+    if typ == "PULL":
+        st.session_state.alerts.insert(0, f"⚠️ 抽單 {f2(price)} -{diff}")
+    else:
+        st.session_state.alerts.insert(0, f"🟢 掛單 {f2(price)} +{diff}")
+
+if is_compress:
+    st.session_state.alerts.insert(0, "📦 價格壓縮區（可能變盤）")
+
+if lp:
+    st.session_state.trades.insert(0, f"{f2(lp)} | {lv}")
+
+# ======================
+# UPDATE BOOK
+# ======================
+st.session_state.last_book = {
+    "b": curr_b,
+    "a": curr_a
+}
+
+# ======================
+# DASHBOARD
+# ======================
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("多空強度", f"{score:.1f} / 100")
+
+with col2:
+    st.metric("壓縮狀態", "是" if is_compress else "否")
+
+with col3:
+    st.metric("成交價", f2(lp))
 
 st.divider()
 
-# ===== 個股 =====
-snap = fetch_stock(symbol)
+# ======================
+# OUTPUT
+# ======================
+c1, c2 = st.columns(2)
 
-if snap:
-    bids = snap["bids"]
-    asks = snap["asks"]
+with c1:
+    st.subheader("🚨 主力行為")
+    st.code("\n".join(st.session_state.alerts[:25]) or "無")
 
-    df_b = pd.DataFrame(bids).rename(columns={"price":"買價","size":"買量"})
-    df_a = pd.DataFrame(asks).rename(columns={"price":"賣價","size":"賣量"})
+with c2:
+    st.subheader("📜 成交流")
+    st.code("\n".join(st.session_state.trades[:25]) or "無")
 
-    st.dataframe(pd.concat([df_b, df_a], axis=1), use_container_width=True)
-
-    curr_b = bids
-    curr_a = asks
-
-    # ===== 主力掛單監控 =====
-    signals = detect_order_flow(curr_b, curr_a, st.session_state.last_book, threshold)
-
-    # ===== 成交 =====
-    lp = snap.get("lastPrice")
-    lv = snap.get("lastSize")
-
-    if lp:
-        st.session_state.trades.insert(0, f"{lp} | {lv}張")
-
-        best_bid = curr_b[0]['price']
-        best_ask = curr_a[0]['price']
-
-        trade_sig = detect_trade_action(lp, lv, best_bid, best_ask)
-        signals.extend(trade_sig)
-
-    # 更新 book
-    st.session_state.last_book = {
-        "b": {x['price']: x['size'] for x in curr_b},
-        "a": {x['price']: x['size'] for x in curr_a}
-    }
-
-    # 存訊號
-    for s in signals:
-        st.session_state.alerts.insert(0, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {s}")
-
-    # 顯示
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("🚨 主力訊號")
-        st.code("\n".join(st.session_state.alerts[:20]) if st.session_state.alerts else "無")
-
-    with col2:
-        st.subheader("📜 成交明細")
-        st.code("\n".join(st.session_state.trades[:30]) if st.session_state.trades else "無")
-
-else:
-    st.error("無資料")
-
-# 刷新
 time.sleep(2)
 st.rerun()
