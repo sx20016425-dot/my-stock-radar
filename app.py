@@ -2,11 +2,20 @@ import streamlit as st
 import pandas as pd
 import asyncio
 import datetime
-from fugle_marketdata import WebMdaClient
+import fugle_marketdata
 
+# --- 自動處理版本相容性 ---
+if hasattr(fugle_marketdata, 'WebMdaClient'):
+    from fugle_marketdata import WebMdaClient
+elif hasattr(fugle_marketdata, 'RestClient'):
+    from fugle_marketdata import RestClient as WebMdaClient
+else:
+    st.error("富果 SDK 版本不相容，請聯繫開發者。")
+    st.stop()
+
+# --- 介面配置 ---
 st.set_page_config(page_title="大戶盤口雷達", layout="wide")
 
-# 檢查密鑰
 if "FUGLE_API_KEY" not in st.secrets:
     st.error("❌ 請在 Secrets 設定 FUGLE_API_KEY")
     st.stop()
@@ -33,6 +42,7 @@ if 'logs' not in st.session_state:
     st.session_state.logs = []
 
 async def run_app():
+    # 根據 SDK 版本初始化 Client
     client = WebMdaClient(api_key=API_KEY)
     stock = client.stock
     try:
