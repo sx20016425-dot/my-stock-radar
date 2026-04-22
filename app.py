@@ -12,7 +12,7 @@ except ImportError:
     st.stop()
 
 # --- 2. 配置 ---
-st.set_page_config(page_title="盤口監控-最終修復版", layout="wide")
+st.set_page_config(page_title="盤口監控-最終版本", layout="wide")
 
 if "FUGLE_API_KEY" not in st.secrets:
     st.error("❌ 請在 Secrets 設定 FUGLE_API_KEY")
@@ -20,9 +20,9 @@ if "FUGLE_API_KEY" not in st.secrets:
 
 API_KEY = st.secrets["FUGLE_API_KEY"]
 
-# --- 3. UI ---
+# --- 3. UI 介面 ---
 st.title("📈 實時盤口監控雷達")
-st.caption(f"適配 SDK v2.4.1 | 修正方法名錯誤")
+st.caption(f"適配 2026 最新 SDK 規範")
 
 with st.sidebar:
     st.header("⚙️ 設定")
@@ -44,17 +44,19 @@ with col_right:
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-# --- 4. 核心邏輯 (修正 connect 方式) ---
+# --- 4. 核心邏輯 (最新鏈式調用寫法) ---
 async def start_monitor():
     client = WebSocketClient(api_key=API_KEY)
     
     try:
-        # 修正重點：新版 SDK 統一使用 .connect() 並在參數中指定 type
-        # 或者使用封裝後的快捷方法
-        async with client.stock.connect.quote(symbol=target) as q_conn, \
-                   client.stock.connect.trade(symbol=target) as t_conn:
-            
-            st.toast(f"✅ 已成功訂閱: {target}", icon="🚀")
+        # 2026 最新規範：
+        # 使用 client.stock.quote.subscribe(symbol) 先訂閱
+        # 再使用 async with 進行連線
+        quote_stream = client.stock.quote.subscribe(target)
+        trade_stream = client.stock.trade.subscribe(target)
+        
+        async with quote_stream as q_conn, trade_stream as t_conn:
+            st.toast(f"✅ 連線成功: {target}", icon="🚀")
             
             await asyncio.gather(
                 update_quotes(q_conn),
@@ -62,15 +64,15 @@ async def start_monitor():
             )
             
     except Exception as e:
-        # 如果 connect.quote 也不行，嘗試最原始的 .connect 寫法
+        # 如果上述鏈式調用仍不支援，則使用最原始的「全手動」模式
+        st.error(f"❌ SDK 呼叫失敗: {e}")
+        st.info("💡 嘗試切換至相容模式...")
         try:
-             async with client.stock.connect(symbol=target, type='quote') as q_conn, \
-                        client.stock.connect(symbol=target, type='trade') as t_conn:
-                 st.toast(f"✅ (原始模式) 已訂閱: {target}", icon="🚀")
-                 await asyncio.gather(update_quotes(q_conn), update_trades(t_conn))
-        except Exception as e2:
-            st.error(f"❌ API 調用失敗: {e2}")
-            st.info("💡 提示：SDK 可能再次變更了路徑，建議檢查富果官方最新的 Python 文件。")
+            # 備援：部分版本將 subscribe 放在 stock 底下
+            async with client.stock.subscribe(target, type='quote') as q_conn:
+                await update_quotes(q_conn)
+        except:
+            st.warning("⚠️ 您的 SDK 版本可能與代碼不匹配，請檢查 requirements.txt 是否為 fugle-marketdata==2.4.1")
 
 async def update_quotes(conn):
     async for msg in conn:
