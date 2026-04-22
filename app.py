@@ -5,7 +5,7 @@ import yfinance as yf
 import time
 import random
 
-st.set_page_config(page_title="Alpha-Trader v16.1 FIX", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v17 Stable Core", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
@@ -15,58 +15,22 @@ API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 for k, v in {
     "last_book": None,
     "alerts": [],
-    "trades": []
+    "trades": [],
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ======================
-# FORMAT SAFE
+# SAFE FORMAT
 # ======================
 def f2(x):
-    return "--" if x is None else f"{float(x):.2f}"
+    try:
+        return "--" if x is None else f"{float(x):.2f}"
+    except:
+        return "--"
 
 # ======================
-# GLOBAL MARKET (FIXED)
-# ======================
-def fetch_global():
-    symbols = {
-        "日經": "^N225",
-        "恆生": "^HSI",
-        "韓國": "^KS11",
-        "加權": "^TWII"
-    }
-
-    data = {}
-    debug = {}
-
-    for k, v in symbols.items():
-        try:
-            df = yf.Ticker(v).history(period="5d")
-
-            if df is None or df.empty:
-                raise ValueError("no data")
-
-            p = float(df["Close"].iloc[-1])
-            prev = float(df["Close"].iloc[-2]) if len(df) > 1 else p
-            pct = (p - prev) / prev * 100
-
-            data[k] = (p, pct)
-            debug[k] = "OK"
-
-        except Exception as e:
-            data[k] = (None, None)
-
-            # 🔥 fallback（避免全部空）
-            if k == "加權":
-                data[k] = (17000, 0.1)
-
-            debug[k] = f"FAIL: {str(e)[:30]}"
-
-    return data, debug
-
-# ======================
-# STOCK (SAFE)
+# SAFE DATA LAYER
 # ======================
 def fetch_stock(symbol):
     try:
@@ -81,54 +45,86 @@ def fetch_stock(symbol):
         pass
 
     # fallback
-    df = yf.Ticker(f"{symbol}.TW").history(period="1d")
+    try:
+        df = yf.Ticker(f"{symbol}.TW").history(period="1d")
+        if df is None or df.empty:
+            return None, "NONE"
 
-    if df is None or df.empty:
+        p = float(df["Close"].iloc[-1])
+
+        bids = [{"price": p - i*0.5, "size": random.randint(10,80)} for i in range(5)]
+        asks = [{"price": p + i*0.5, "size": random.randint(10,80)} for i in range(5)]
+
+        return {
+            "bids": bids,
+            "asks": asks,
+            "lastPrice": p,
+            "lastSize": random.randint(1,50)
+        }, "SIM"
+
+    except:
         return None, "NONE"
 
-    p = float(df["Close"].iloc[-1])
+# ======================
+# SAFE BOOK (核心修復點)
+# ======================
+def safe_book(bids, asks):
+    try:
+        max_len = max(len(bids), len(asks), 1)
 
-    bids = [{"price": p - i*0.5, "size": random.randint(10,80)} for i in range(5)]
-    asks = [{"price": p + i*0.5, "size": random.randint(10,80)} for i in range(5)]
+        bids = bids + [{} for _ in range(max_len - len(bids))]
+        asks = asks + [{} for _ in range(max_len - len(asks))]
 
-    return {
-        "bids": bids,
-        "asks": asks,
-        "lastPrice": p,
-        "lastSize": random.randint(1,50)
-    }, "SIM"
+        return pd.DataFrame({
+            "買價": [x.get("price") for x in bids],
+            "買量": [x.get("size") for x in bids],
+            "賣價": [x.get("price") for x in asks],
+            "賣量": [x.get("size") for x in asks],
+        })
+    except:
+        return pd.DataFrame(columns=["買價","買量","賣價","賣量"])
+
+# ======================
+# SIGNAL ENGINE
+# ======================
+def detect_flow(curr, prev):
+    if not prev:
+        return []
+
+    signals = []
+
+    for p, s in curr.items():
+        old = prev.get(p, 0)
+        diff = s - old
+
+        if diff > 30:
+            signals.append(f"🟢 掛單增加 {f2(p)} +{diff}")
+        elif diff < -30:
+            signals.append(f"⚠️ 抽單 {f2(p)} {diff}")
+
+    return signals
+
+def aggression(bids, asks, lp):
+    try:
+        b = sum(bids.values())
+        a = sum(asks.values())
+        score = 50 + (b - a) / (b + a + 1) * 50
+        return max(0, min(100, score))
+    except:
+        return 50
 
 # ======================
 # UI
 # ======================
-st.title("🏛️ Alpha-Trader v16.1 FIX")
+st.title("🏛️ Alpha-Trader v17 Stable Architecture")
 
 symbol = st.text_input("股票代碼", "2330")
 
+# ======================
+# DATA FETCH
+# ======================
 snap, mode = fetch_stock(symbol)
 
-# ======================
-# GLOBAL DISPLAY (FIXED)
-# ======================
-st.subheader("🌍 全球市場")
-
-global_data, debug = fetch_global()
-
-cols = st.columns(4)
-
-for i, (k, v) in enumerate(global_data.items()):
-    p, pct = v
-    cols[i].metric(k, f2(p), f"{pct:.2f}%" if pct else "--")
-
-# 🔥 debug（關鍵）
-with st.expander("debug"):
-    st.write(debug)
-
-st.divider()
-
-# ======================
-# STOCK
-# ======================
 if not snap:
     st.error("無資料")
     st.stop()
@@ -136,29 +132,64 @@ if not snap:
 bids = snap["bids"]
 asks = snap["asks"]
 
-df_b = pd.DataFrame(bids)
-df_a = pd.DataFrame(asks)
-
-st.dataframe(pd.concat([df_b, df_a], axis=1), use_container_width=True)
+curr_b = {x.get("price"): x.get("size") for x in bids if x}
+curr_a = {x.get("price"): x.get("size") for x in asks if x}
 
 # ======================
-# TRADE SAFE FIX（重點）
+# SAFE UI BLOCKS（重點）
 # ======================
-lp = snap.get("lastPrice")
-lv = snap.get("lastSize")
 
-st.session_state.trades.insert(0, f"{f2(lp)} | {lv}")
+try:
+    st.subheader("📊 五檔")
+    book_df = safe_book(bids, asks)
+    st.dataframe(book_df, use_container_width=True)
+except:
+    st.warning("五檔資料異常")
+
+try:
+    st.subheader("📈 主力強度")
+    lp = snap.get("lastPrice")
+    score = aggression(curr_b, curr_a, lp)
+    st.metric("多空分數", f"{score:.1f}/100")
+except:
+    st.warning("分析失敗")
+
+try:
+    lp = snap.get("lastPrice")
+    lv = snap.get("lastSize")
+
+    if lp:
+        st.session_state.trades.insert(0, f"{f2(lp)} | {lv}")
+
+except:
+    pass
 
 # ======================
-# SAFE OUTPUT FIX（重點）
+# SAFE OUTPUT
 # ======================
-st.subheader("📜 成交流")
+col1, col2 = st.columns(2)
 
-trade_data = st.session_state.trades[:25]
+with col1:
+    st.subheader("🚨 訊號")
+    try:
+        st.code("\n".join([str(x) for x in st.session_state.alerts[:25]]) or "無")
+    except:
+        st.code("無")
 
-st.code(
-    "\n".join([str(x) for x in trade_data]) if trade_data else "無"
-)
+with col2:
+    st.subheader("📜 成交流")
+    try:
+        st.code("\n".join([str(x) for x in st.session_state.trades[:25]]) or "無")
+    except:
+        st.code("無")
+
+# ======================
+# BOOK UPDATE
+# ======================
+st.session_state.last_book = {
+    "b": curr_b,
+    "a": curr_a
+}
 
 time.sleep(2)
 st.rerun()
