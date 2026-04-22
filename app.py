@@ -7,27 +7,30 @@ import random
 import time
 import datetime
 
-st.set_page_config(page_title="Alpha-Trader v21 Terminal", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v22 Quant Terminal", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# INIT SAFE STATE
+# 🧠 SAFE STATE (永不覆蓋)
 # =========================
-defaults = {
-    "book": None,
-    "alerts": [],
-    "trades": [],
-    "signals": [],
-    "pnl": []
-}
+def init_state():
+    base = {
+        "book": None,
+        "alerts": [],
+        "signals": [],
+        "trades": [],
+        "metrics": {},
+        "errors": []
+    }
+    for k, v in base.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+init_state()
 
 # =========================
-# SAFE FORMAT
+# FORMAT SAFE
 # =========================
 def f2(x):
     try:
@@ -36,11 +39,10 @@ def f2(x):
         return "--"
 
 # =========================
-# =========================
-# 🌍 LAYER 1 GLOBAL MARKET
+# 🌍 LAYER 1 GLOBAL MARKET (SAFE)
 # =========================
 @st.cache_data(ttl=5)
-def global_market():
+def global_layer():
     idx = {
         "日經": "^N225",
         "恆生": "^HSI",
@@ -56,13 +58,12 @@ def global_market():
             prev = float(df["Close"].iloc[-2])
             pct = (p - prev) / prev * 100
             out[k] = (p, pct)
-        except:
+        except Exception as e:
             out[k] = (None, None)
-
     return out
 
 # =========================
-# LAYER 2 MARKET DATA
+# 📊 LAYER 2 MARKET DATA (SAFE)
 # =========================
 def fetch_stock(symbol):
     try:
@@ -76,26 +77,30 @@ def fetch_stock(symbol):
     except:
         pass
 
-    df = yf.Ticker(f"{symbol}.TW").history(period="1d")
-    if df is None or df.empty:
+    # fallback
+    try:
+        df = yf.Ticker(f"{symbol}.TW").history(period="1d")
+        if df is None or df.empty:
+            return None, "NONE"
+
+        p = float(df["Close"].iloc[-1])
+
+        bids = [{"price": p - i*0.5, "size": random.randint(10,80)} for i in range(5)]
+        asks = [{"price": p + i*0.5, "size": random.randint(10,80)} for i in range(5)]
+
+        return {
+            "bids": bids,
+            "asks": asks,
+            "lastPrice": p,
+            "lastSize": random.randint(1,50)
+        }, "SIM"
+    except:
         return None, "NONE"
 
-    p = float(df["Close"].iloc[-1])
-
-    bids = [{"price": p - i*0.5, "size": random.randint(10,80)} for i in range(5)]
-    asks = [{"price": p + i*0.5, "size": random.randint(10,80)} for i in range(5)]
-
-    return {
-        "bids": bids,
-        "asks": asks,
-        "lastPrice": p,
-        "lastSize": random.randint(1,50)
-    }, "SIM"
-
 # =========================
-# SAFE BOOK
+# SAFE ORDERBOOK
 # =========================
-def safe_book(bids, asks):
+def book(bids, asks):
     n = max(len(bids), len(asks), 1)
     bids = bids + [{} for _ in range(n - len(bids))]
     asks = asks + [{} for _ in range(n - len(asks))]
@@ -116,7 +121,7 @@ def imbalance(b, a):
     except:
         return 0
 
-def sweep(curr, prev):
+def liquidity_flow(curr, prev):
     if not prev:
         return []
 
@@ -125,46 +130,53 @@ def sweep(curr, prev):
         old = prev.get(p, 0)
         diff = s - old
 
-        if diff > 50:
-            out.append(f"🟢 掛單堆積 {f2(p)} +{diff}")
-        elif diff < -50:
-            out.append(f"🧨 掃單抽撤 {f2(p)} {diff}")
+        if diff > 60:
+            out.append(f"🟢 堆單 {f2(p)} +{diff}")
+        elif diff < -60:
+            out.append(f"🧨 抽單 {f2(p)} {diff}")
+
     return out
 
-def inst_score(imb, lv):
-    score = 50 + imb * 80
-    if lv and lv > 40:
-        score += 10
-    return max(0, min(100, score))
+def institution_score(imb, lv):
+    try:
+        score = 50 + imb * 80
+        if lv and lv > 40:
+            score += 10
+        return max(0, min(100, score))
+    except:
+        return 50
 
 # =========================
-# 📈 LAYER 4 STRATEGY + BACKTEST LIGHT
+# 📈 LAYER 4 STRATEGY ENGINE
 # =========================
-def strategy_signal(score, imb, lv):
-    sig = []
+def strategy(score, imb, lv):
+    out = []
 
-    if score > 70 and imb > 0.2:
-        sig.append(("LONG", "多單"))
+    if score > 70 and imb > 0.25:
+        out.append(("LONG", "機構多單"))
 
-    if score < 30 and imb < -0.2:
-        sig.append(("SHORT", "空單"))
+    if score < 30 and imb < -0.25:
+        out.append(("SHORT", "機構空單"))
 
     if lv and lv > 50:
-        sig.append(("BREAK", "突破"))
+        out.append(("BREAK", "放量突破"))
 
-    return sig
+    if lv and lv > 50 and abs(imb) < 0.1:
+        out.append(("FAKE", "假突破"))
+
+    return out
 
 # =========================
 # UI
 # =========================
-st.title("🏛️ Alpha-Trader v21 ALL-IN-ONE TERMINAL")
+st.title("🏛️ Alpha-Trader v22 Quant Trading Terminal")
 
 symbol = st.text_input("股票代碼", "2330")
 
 snap, mode = fetch_stock(symbol)
 
 if not snap:
-    st.error("無資料")
+    st.error("無資料（API or fallback failed）")
     st.stop()
 
 bids = snap["bids"]
@@ -177,12 +189,13 @@ lp = snap.get("lastPrice")
 lv = snap.get("lastSize")
 
 # =========================
-# 🌍 GLOBAL LAYER
+# 🌍 GLOBAL LAYER (NO LOSS)
 # =========================
 st.subheader("🌍 全球市場")
-g = global_market()
 
+g = global_layer()
 cols = st.columns(4)
+
 for i, (k, v) in enumerate(g.items()):
     p, pct = v
     cols[i].metric(k, f2(p), f"{pct:.2f}%" if pct else "--")
@@ -192,31 +205,34 @@ st.divider()
 # =========================
 # 📊 MARKET LAYER
 # =========================
-st.subheader("📊 五檔")
-st.dataframe(safe_book(bids, asks), use_container_width=True)
+st.subheader("📊 五檔深度")
+st.dataframe(book(bids, asks), use_container_width=True)
 
 # =========================
 # 🧠 INSTITUTION LAYER
 # =========================
 imb = imbalance(curr_b, curr_a)
-score = inst_score(imb, lv)
+score = institution_score(imb, lv)
 
-sw = sweep(curr_a, st.session_state.book["a"] if st.session_state.book else {})
+flow = liquidity_flow(
+    curr_a,
+    st.session_state.book["a"] if st.session_state.book else {}
+)
 
-for s in sw:
-    st.session_state.alerts.insert(0, s)
+for f in flow:
+    st.session_state.alerts.insert(0, f)
 
 # =========================
 # STRATEGY LAYER
 # =========================
-sig = strategy_signal(score, imb, lv)
+sig = strategy(score, imb, lv)
 
 for s in sig:
     st.session_state.signals.insert(0, s[1])
     st.session_state.trades.insert(0, f"{s[1]} @ {f2(lp)}")
 
 # =========================
-# UPDATE STATE
+# STATE UPDATE (SAFE)
 # =========================
 st.session_state.book = {"b": curr_b, "a": curr_a}
 
@@ -235,24 +251,24 @@ with c3:
     st.metric("成交價", f2(lp))
 
 # =========================
-# OUTPUT
+# OUTPUT PANELS (NEVER REMOVE)
 # =========================
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.subheader("🚨 流動性警報")
+    st.subheader("🚨 流動性行為")
     st.code("\n".join(st.session_state.alerts[:20]) or "無")
 
 with col2:
-    st.subheader("📊 策略訊號")
+    st.subheader("📊 訊號系統")
     st.code("\n".join(st.session_state.signals[:20]) or "無")
 
 with col3:
-    st.subheader("📜 交易決策")
+    st.subheader("📜 交易紀錄")
     st.code("\n".join(st.session_state.trades[:20]) or "無")
 
 # =========================
-# LOOP
+# LOOP SAFE
 # =========================
 st.session_state.trades.insert(0, f"{f2(lp)} | {lv}")
 
