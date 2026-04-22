@@ -4,42 +4,39 @@ import asyncio
 import datetime
 import sys
 
-# --- 1. 深度暴力導入 (解決 ImportError 的最終手段) ---
+# --- 1. 精確導入 (根據成員清單校正大小寫) ---
 try:
-    # 嘗試方案 A: 標準導入
-    from fugle_marketdata import WebsocketClient
+    # 根據你的 logs，確定名稱是 WebSocketClient (大寫 S)
+    from fugle_marketdata import WebSocketClient
 except ImportError:
+    # 備用方案：如果還是失敗，嘗試從 websocket 模組導入
     try:
-        # 嘗試方案 B: 絕對路徑導入 (針對 SDK 內部結構)
-        from fugle_marketdata.websocket.client import WebsocketClient
+        from fugle_marketdata.websocket import WebSocketClient
     except ImportError:
-        try:
-            # 嘗試方案 C: 舊版相容導入
-            from fugle_marketdata import WebMdaClient as WebsocketClient
-        except ImportError:
-            import fugle_marketdata
-            st.error("❌ 嚴重導入錯誤！")
-            st.write("環境內的套件成員：", dir(fugle_marketdata))
-            st.stop()
+        st.error("導入失敗：請確認 fugle-marketdata 版本為 2.4.1")
+        st.stop()
 
 # --- 2. 頁面配置 ---
 st.set_page_config(page_title="盤口監控雷達", layout="wide")
 
 if "FUGLE_API_KEY" not in st.secrets:
-    st.error("❌ 找不到 API Key。請在 Secrets 設定 FUGLE_API_KEY")
+    st.error("❌ 找不到 API Key。請在 Streamlit Cloud 的 Secrets 設定 FUGLE_API_KEY")
     st.stop()
 
 API_KEY = st.secrets["FUGLE_API_KEY"]
 
 # --- 3. UI 佈局 ---
-st.title("📈 實時盤口監控")
-st.caption(f"Python {sys.version.split()[0]} | SDK 2.4.1 暴力相容模式")
+st.title("📈 實時盤口監控 (校正版)")
+st.caption(f"Python {sys.version.split()[0]} | SDK 2.4.1 | 類別: WebSocketClient")
 
 with st.sidebar:
     st.header("⚙️ 參數設定")
     target = st.text_input("股票代號", value="3042")
     threshold = st.number_input("大單張數門檻", value=50)
     btn_start = st.button("🚀 開始監控", use_container_width=True)
+    if st.button("🧹 清空紀錄"):
+        st.session_state.history = []
+        st.rerun()
 
 col_left, col_right = st.columns([2, 3])
 with col_left:
@@ -54,22 +51,20 @@ if 'history' not in st.session_state:
 
 # --- 4. 核心邏輯 ---
 async def main():
-    # 這裡加入一個保護，確保 Client 存在
+    # 使用正確大小寫的 WebSocketClient
+    client = WebSocketClient(api_key=API_KEY)
+    stock = client.stock
+    
     try:
-        client = WebsocketClient(api_key=API_KEY)
-        stock = client.stock
-        
-        # 偵測方法名稱
-        q_func = stock.quote if hasattr(stock, 'quote') else stock.connect_quote
-        t_func = stock.trade if hasattr(stock, 'trade') else stock.connect_trade
-        
-        async with q_func(symbol=target) as q_conn, \
-                   t_func(symbol=target) as t_conn:
+        # v2.4.1 標準方法名是 quote 和 trade
+        async with stock.quote(symbol=target) as q_conn, \
+                   stock.trade(symbol=target) as t_conn:
             
             st.toast(f"連線成功: {target}", icon="✅")
             await asyncio.gather(handle_q(q_conn), handle_t(t_conn))
     except Exception as e:
-        st.error(f"連線中斷或初始化失敗: {e}")
+        st.error(f"連線失敗: {e}")
+        st.info("💡 提示：請確認您的 API Key 具有 WebSocket 權限。")
 
 async def handle_q(conn):
     async for msg in conn:
@@ -92,10 +87,10 @@ async def handle_t(conn):
             icon = "🔥" if v >= threshold else "⚪"
             log = f"{icon} {t} | 價: {p} | 量: {v}"
             st.session_state.history.insert(0, log)
-            st.session_state.history = st.session_state.history[:15]
-            trade_spot.code("\n".join(st.session_state.history))
+            st.session_state.history = st.session_state.history[:20]
+            trade_ui.code("\n".join(st.session_state.history))
 
-# --- 5. 啟動入口 ---
+# --- 5. 執行 ---
 if btn_start:
     try:
         asyncio.run(main())
