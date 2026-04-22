@@ -4,37 +4,34 @@ import asyncio
 import datetime
 import sys
 
-# --- 1. 精確導入 (根據成員清單校正大小寫) ---
+# --- 1. 導入校正 (大小寫與成員清單匹配) ---
 try:
-    # 根據你的 logs，確定名稱是 WebSocketClient (大寫 S)
     from fugle_marketdata import WebSocketClient
 except ImportError:
-    # 備用方案：如果還是失敗，嘗試從 websocket 模組導入
-    try:
-        from fugle_marketdata.websocket import WebSocketClient
-    except ImportError:
-        st.error("導入失敗：請確認 fugle-marketdata 版本為 2.4.1")
-        st.stop()
+    st.error("❌ 找不到 WebSocketClient。請重啟 App 以重新安裝環境。")
+    st.stop()
 
 # --- 2. 頁面配置 ---
-st.set_page_config(page_title="盤口監控雷達", layout="wide")
+st.set_page_config(page_title="大戶盤口監控-完整版", layout="wide")
 
 if "FUGLE_API_KEY" not in st.secrets:
-    st.error("❌ 找不到 API Key。請在 Streamlit Cloud 的 Secrets 設定 FUGLE_API_KEY")
+    st.error("❌ 請在 Secrets 中設定 FUGLE_API_KEY")
     st.stop()
 
 API_KEY = st.secrets["FUGLE_API_KEY"]
 
-# --- 3. UI 佈局 ---
-st.title("📈 實時盤口監控 (校正版)")
-st.caption(f"Python {sys.version.split()[0]} | SDK 2.4.1 | 類別: WebSocketClient")
+# --- 3. UI 介面 ---
+st.title("📈 實時盤口監控雷達")
+st.caption(f"環境: Python {sys.version.split()[0]} | SDK v2.4.1")
 
 with st.sidebar:
-    st.header("⚙️ 參數設定")
-    target = st.text_input("股票代號", value="3042")
-    threshold = st.number_input("大單張數門檻", value=50)
-    btn_start = st.button("🚀 開始監控", use_container_width=True)
-    if st.button("🧹 清空紀錄"):
+    st.header("⚙️ 設定")
+    target = st.text_input("代號 (例: 3042, 2330)", value="3042")
+    threshold = st.number_input("大單門檻 (張)", value=50)
+    btn_start = st.button("🚀 啟動監控", use_container_width=True)
+    
+    st.divider()
+    if st.button("🧹 清空歷史"):
         st.session_state.history = []
         st.rerun()
 
@@ -49,24 +46,40 @@ with col_right:
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-# --- 4. 核心邏輯 ---
-async def main():
-    # 使用正確大小寫的 WebSocketClient
+# --- 4. 核心監控邏輯 ---
+async def start_monitor():
     client = WebSocketClient(api_key=API_KEY)
     stock = client.stock
     
     try:
-        # v2.4.1 標準方法名是 quote 和 trade
+        # 使用 v2.4.1 標準路徑
         async with stock.quote(symbol=target) as q_conn, \
                    stock.trade(symbol=target) as t_conn:
             
-            st.toast(f"連線成功: {target}", icon="✅")
-            await asyncio.gather(handle_q(q_conn), handle_t(t_conn))
+            st.toast(f"✅ 連線成功: {target}", icon="🚀")
+            
+            # 併發處理五檔與成交紀錄
+            await asyncio.gather(
+                update_quotes(q_conn),
+                update_trades(t_conn)
+            )
+            
     except Exception as e:
-        st.error(f"連線失敗: {e}")
-        st.info("💡 提示：請確認您的 API Key 具有 WebSocket 權限。")
+        # --- 診斷邏輯 ---
+        error_msg = str(e)
+        st.error(f"❌ 連線失敗: {error_msg}")
+        
+        if "403" in error_msg:
+            st.warning("⚠️ [診斷] 403 Forbidden: 你的 API Key 沒有 WebSocket 權限。請前往富果後台確認「行情資訊 API」是否已啟用。")
+        elif "401" in error_msg:
+            st.warning("⚠️ [診斷] 401 Unauthorized: API Key 無效。請檢查 Secrets 設定是否有空格或填錯。")
+        elif "1006" in error_msg:
+            st.info("💡 [診斷] 1006: 連線被強制關閉。可能是非交易時段，或該代號不支持即時數據。")
+        else:
+            st.info("💡 提示：請確認您的帳戶已完成開戶並啟用 API 功能。")
 
-async def handle_q(conn):
+async def update_quotes(conn):
+    """處理五檔數據"""
     async for msg in conn:
         if msg.get('event') == 'data':
             d = msg['data']
@@ -78,22 +91,26 @@ async def handle_q(conn):
             })
             book_ui.table(df)
 
-async def handle_t(conn):
+async def update_trades(conn):
+    """處理成交明細"""
     async for msg in conn:
         if msg.get('event') == 'data':
             d = msg['data']
             p, v = d.get('price'), d.get('size')
             t = datetime.datetime.now().strftime("%H:%M:%S")
+            
             icon = "🔥" if v >= threshold else "⚪"
             log = f"{icon} {t} | 價: {p} | 量: {v}"
+            
             st.session_state.history.insert(0, log)
             st.session_state.history = st.session_state.history[:20]
             trade_ui.code("\n".join(st.session_state.history))
 
-# --- 5. 執行 ---
+# --- 5. 執行啟動 ---
 if btn_start:
     try:
-        asyncio.run(main())
+        asyncio.run(start_monitor())
     except RuntimeError:
+        # 針對 Streamlit 異步環境的緩衝處理
         loop = asyncio.get_event_loop()
-        loop.create_task(main())
+        loop.create_task(start_monitor())
