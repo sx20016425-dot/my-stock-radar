@@ -5,12 +5,12 @@ import yfinance as yf
 import time
 import random
 
-st.set_page_config(page_title="Alpha-Trader v24 CONTROL WALL", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v25 CONSOLIDATED WALL", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# STATE (完全保留)
+# STATE
 # =========================
 for k in ["last_book", "alerts", "trades"]:
     if k not in st.session_state:
@@ -26,7 +26,7 @@ def f2(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL MARKET
+# 🌍 GLOBAL
 # =========================
 @st.cache_data(ttl=5)
 def fetch_global():
@@ -49,7 +49,7 @@ def fetch_global():
     return out
 
 # =========================
-# STOCK ENGINE
+# STOCK
 # =========================
 def fetch_stock(symbol):
     try:
@@ -91,7 +91,7 @@ def book(bids,asks):
     })
 
 # =========================
-# FLOW ENGINE
+# FLOW
 # =========================
 def flow(curr,prev):
     sig=[]
@@ -119,7 +119,7 @@ def flow(curr,prev):
     return sig
 
 # =========================
-# TRADE FEED（保留）
+# TRADE TAPE
 # =========================
 def trade_feed(snap):
     lp = snap["lastPrice"]
@@ -129,7 +129,7 @@ def trade_feed(snap):
 # =========================
 # UI
 # =========================
-st.title("🏛️ Alpha-Trader v24 INSTITUTIONAL CONTROL WALL")
+st.title("🏛️ Alpha-Trader v25 CONSOLIDATED INSTITUTION WALL")
 
 symbol = st.text_input("股票代碼","2330")
 
@@ -163,82 +163,67 @@ lv=snap["lastSize"]
 trade_feed(snap)
 
 # =========================
-# MAIN LAYOUT
+# LAYOUT
 # =========================
 left,right=st.columns([1,2])
 
-# =========================
-# LEFT: BOOK
-# =========================
 with left:
     st.subheader("📊 五檔")
     st.dataframe(book(bids,asks),use_container_width=True)
 
-# =========================
-# RIGHT: SPLIT
-# =========================
-r1,r2=st.columns([1,1])
+with right:
 
-# =========================
-# DELTA
-# =========================
-with r1:
-    st.subheader("📈 Delta")
+    r1,r2=st.columns([1,1])
 
-    delta_df = flow(snap, st.session_state.last_book)
-    st.code("\n".join(delta_df) or "無")
+    with r1:
+        st.subheader("📈 Delta（15筆限制）")
 
-# =========================
-# 🧠 INSTITUTION WALL (15筆 + TRADE TAPE整合)
-# =========================
-with r2:
-
-    st.subheader("🧠 機構監控牆（15筆）")
-
-    flow_data = flow(snap, st.session_state.last_book)
-
-    for f in flow_data:
-        st.session_state.alerts.insert(0, f)
-
-    # 限制 15 筆
-    alerts = st.session_state.alerts[:15]
-    trades = st.session_state.trades[:15]
+        delta_data = flow(snap, st.session_state.last_book)
+        st.code("\n".join(delta_data[:15]) or "無")
 
     # =========================
-    # 左：alerts
+    # 🧠 SINGLE CONSOLIDATED WALL (ONLY ONE)
     # =========================
-    col_a, col_b = st.columns(2)
+    with r2:
 
-    with col_a:
-        st.markdown("### 🚨 訊號")
-        st.code("\n".join(alerts) or "無")
+        st.subheader("🧠 機構監控牆（統一15筆）")
 
-    # =========================
-    # 右：trade tape（你要求的整合）
-    # =========================
-    with col_b:
-        st.markdown("### 📡 即時成交")
+        flow_data = flow(snap, st.session_state.last_book)
 
-        st.code("\n".join(trades) or "無")
+        for f in flow_data:
+            st.session_state.alerts.insert(0,f)
+
+        alerts = st.session_state.alerts[:15]
+        trades = st.session_state.trades[:15]
+
+        wall_col1, wall_col2 = st.columns(2)
+
+        with wall_col1:
+            st.markdown("### 🚨 訊號")
+            st.code("\n".join(alerts) or "無")
+
+        with wall_col2:
+            st.markdown("### 📡 即時成交")
+            st.code("\n".join(trades) or "無")
 
 # =========================
 # METRICS
 # =========================
 st.divider()
 
-m1,m2,m3=st.columns(3)
+c1,c2,c3=st.columns(3)
 
-with m1:
+with c1:
     st.metric("成交價",f2(lp))
 
-with m2:
+with c2:
     st.metric("成交量",lv)
 
-with m3:
+with c3:
     st.metric("模式",mode)
 
 # =========================
-# SAVE
+# SAVE STATE
 # =========================
 st.session_state.last_book = snap
 
