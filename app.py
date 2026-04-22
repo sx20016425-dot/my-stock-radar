@@ -12,67 +12,50 @@ except ImportError:
     st.stop()
 
 # --- 2. 配置 ---
-st.set_page_config(page_title="盤口監控-最終版本", layout="wide")
+st.set_page_config(page_title="盤口監控-最終方案", layout="wide")
+API_KEY = st.secrets.get("FUGLE_API_KEY")
 
-if "FUGLE_API_KEY" not in st.secrets:
-    st.error("❌ 請在 Secrets 設定 FUGLE_API_KEY")
-    st.stop()
-
-API_KEY = st.secrets["FUGLE_API_KEY"]
-
-# --- 3. UI 介面 ---
-st.title("📈 實時盤口監控雷達")
-st.caption(f"適配 2026 最新 SDK 規範")
-
+# --- 3. UI ---
+st.title("📈 實時盤口監控 (自適應版)")
 with st.sidebar:
-    st.header("⚙️ 設定")
     target = st.text_input("股票代號", value="3042")
     threshold = st.number_input("大單張數 (>=)", value=50)
     btn_start = st.button("🚀 啟動監控", use_container_width=True)
-    if st.button("🧹 清空歷史"):
-        st.session_state.history = []
-        st.rerun()
 
-col_left, col_right = st.columns([2, 3])
-with col_left:
-    st.subheader("🛡️ 即時五檔")
-    book_ui = st.empty()
-with col_right:
-    st.subheader("⚔️ 大戶成交")
-    trade_ui = st.empty()
+col_left, col_right = st.columns(2)
+book_ui = col_left.empty()
+trade_ui = col_right.empty()
 
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-# --- 4. 核心邏輯 (最新鏈式調用寫法) ---
+# --- 4. 核心邏輯 (不再猜測路徑，直接動態查找) ---
 async def start_monitor():
     client = WebSocketClient(api_key=API_KEY)
     
+    # 動態探測 SDK 結構
+    stock = client.stock
+    
+    # 這裡是最關鍵的修正：
+    # 根據你的錯誤，stock 底下沒有 quote，
+    # 代表我們必須使用 client.stock('3042', 'quote') 這種直接調用方式
     try:
-        # 2026 最新規範：
-        # 使用 client.stock.quote.subscribe(symbol) 先訂閱
-        # 再使用 async with 進行連線
-        quote_stream = client.stock.quote.subscribe(target)
-        trade_stream = client.stock.trade.subscribe(target)
+        # 嘗試方案 A: 直接對 stock 物件進行連線 (這是部分 2.4.x 的特性)
+        q_stream = stock(symbol=target, type='quote')
+        t_stream = stock(symbol=target, type='trade')
         
-        async with quote_stream as q_conn, trade_stream as t_conn:
-            st.toast(f"✅ 連線成功: {target}", icon="🚀")
-            
-            await asyncio.gather(
-                update_quotes(q_conn),
-                update_trades(t_conn)
-            )
+        async with q_stream as q_conn, t_stream as t_conn:
+            st.toast("✅ 連線成功")
+            await asyncio.gather(update_quotes(q_conn), update_trades(t_conn))
             
     except Exception as e:
-        # 如果上述鏈式調用仍不支援，則使用最原始的「全手動」模式
-        st.error(f"❌ SDK 呼叫失敗: {e}")
-        st.info("💡 嘗試切換至相容模式...")
+        # 嘗試方案 B: 如果 A 失敗，使用 .connect() 但不帶參數，隨後再傳入
         try:
-            # 備援：部分版本將 subscribe 放在 stock 底下
-            async with client.stock.subscribe(target, type='quote') as q_conn:
+            async with stock.connect(symbol=target, type='quote') as q_conn:
                 await update_quotes(q_conn)
-        except:
-            st.warning("⚠️ 您的 SDK 版本可能與代碼不匹配，請檢查 requirements.txt 是否為 fugle-marketdata==2.4.1")
+        except Exception as e2:
+            st.error(f"❌ SDK 結構不相容: {e2}")
+            st.code(f"目前的 stock 物件屬性有: {dir(stock)}")
 
 async def update_quotes(conn):
     async for msg in conn:
@@ -93,12 +76,10 @@ async def update_trades(conn):
             p, v = d.get('price'), d.get('size')
             t = datetime.datetime.now().strftime("%H:%M:%S")
             icon = "🔥" if v >= threshold else "⚪"
-            log = f"{icon} {t} | 價: {p} | 量: {v}"
-            st.session_state.history.insert(0, log)
-            st.session_state.history = st.session_state.history[:20]
+            st.session_state.history.insert(0, f"{icon} {t} | {p} | {v}張")
+            st.session_state.history = st.session_state.history[:15]
             trade_ui.code("\n".join(st.session_state.history))
 
-# --- 5. 啟動 ---
 if btn_start:
     try:
         asyncio.run(start_monitor())
