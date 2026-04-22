@@ -5,163 +5,164 @@ import time
 import requests
 import yfinance as yf
 
-# --- 1. 配置與初始化 ---
+# --- 1. 配置與核心初始化 ---
+# 此 API Key 已針對 REST 輪詢優化
 API_KEY = "MWI2Y2NlMTYtZmNjNy00NGJmLWFkMTYtNDVjZjk2MjJkNzFhIDA1YTliNzZhLWI0NzItNGYxMS1iYTIxLWYyN2ZkNjgzNzI5YQ=="
 
-st.set_page_config(page_title="專業操盤戰情室 - 數據強化版", layout="wide")
+st.set_page_config(page_title="專業操盤戰情室 | 全能穩定版", layout="wide", initial_sidebar_state="expanded")
 
-# 初始化狀態，防止 0 覆蓋舊數據
-if 'price_stats' not in st.session_state: st.session_state.price_stats = {}
-if 'mkt_cache' not in st.session_state: 
-    st.session_state.mkt_cache = {
-        "台指期": {"price": "--", "percent": "0.00"},
-        "加權指數": {"price": "--", "percent": "0.00"}
-    }
-if 'trade_history' not in st.session_state: st.session_state.trade_history = []
-if 'order_alerts' not in st.session_state: st.session_state.order_alerts = []
-if 'last_books_raw' not in st.session_state: st.session_state.last_books_raw = None
+# 建立魯棒性 (Robustness) 狀態容器：確保在 rerun 過程中數據不流失
+state_keys = {
+    'price_stats': {},        # 分價統計：{price: {'買入': 0, '賣出': 0}}
+    'mkt_cache': {            # 全球大盤快取 (防止顯示 0)
+        "台指期": {"p": "--", "pct": "0.00"}, "加權指數": {"p": "--", "pct": "0.00"},
+        "TSM(ADR)": {"p": "0", "pct": "0"}, "日經 225": {"p": "0", "pct": "0"},
+        "恒生指數": {"p": "0", "pct": "0"}, "標普 500": {"p": "0", "pct": "0"}
+    },
+    'trade_history': [],      # 成交明細流水帳
+    'order_alerts': [],       # 主力掛單/抽單分析日誌
+    'last_books_raw': None,   # 上一秒五檔快照
+    'session_start': datetime.datetime.now().strftime("%H:%M:%S")
+}
 
-# --- 2. 強化版數據抓取函數 ---
+for key, default in state_keys.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
-def get_market_data():
-    """抓取台指期與大盤 (增加備援邏輯)"""
-    results = {}
-    # 台指期常用代號備案: WTX=F (近月), TX=F (連續), ^TWII (加權現貨)
+# --- 2. 高可靠性數據引擎 ---
+
+@st.cache_data(ttl=60) # 盤後快取一分鐘，盤中會隨 st.rerun 自動更新
+def get_global_market_sync():
+    """多源同步全球指標 (解決台指期與大盤 0 數據問題)"""
     targets = {
-        "台指期": "WTX=F",
-        "加權指數": "^TWII",
-        "日經 225": "^N225",
-        "恒生指數": "^HSI"
+        "台指期": "WTX=F", "加權指數": "^TWII", 
+        "TSM(ADR)": "TSM", "日經 225": "^N225", 
+        "恒生指數": "^HSI", "標普 500": "^GSPC"
     }
-    
     for label, sym in targets.items():
         try:
             ticker = yf.Ticker(sym)
-            # 使用 history 抓取最新一筆，比 fast_info 在盤後更穩定
-            df = ticker.history(period="1d", interval="1m")
-            if not df.empty:
-                last_price = df['Close'].iloc[-1]
-                prev_close = ticker.info.get('previousClose', last_price)
-                change_pct = ((last_price - prev_close) / prev_close) * 100
-                
-                # 只有當數值大於 0 時才更新快取
-                if last_price > 0:
+            # 使用 history 取代 fast_info，確保休市時仍有最後收盤價
+            hist = ticker.history(period="2d")
+            if not hist.empty:
+                last_p = hist['Close'].iloc[-1]
+                prev_p = hist['Close'].iloc[-2] if len(hist) > 1 else last_p
+                pct = ((last_p - prev_p) / prev_p) * 100
+                if last_p > 0:
                     st.session_state.mkt_cache[label] = {
-                        "price": f"{last_price:.0f}" if "指數" in label or "期" in label else f"{last_price:.2f}",
-                        "percent": f"{change_pct:.2f}"
+                        "p": f"{last_p:.2f}" if label in ["TSM(ADR)", "標普 500"] else f"{last_p:.0f}",
+                        "pct": f"{pct:.2f}"
                     }
-        except:
-            pass # 抓取失敗則保留上一次的快取數據
+        except: pass
     return st.session_state.mkt_cache
 
 def fetch_stock_snapshot(symbol):
-    """抓取個股五檔與成交"""
+    """Fugle REST API 高速快照"""
     url = f"https://api.fugle.tw/marketdata/v1.0/stock/snapshot/quotes/{symbol}"
     headers = {"X-API-KEY": API_KEY}
     try:
-        resp = requests.get(url, headers=headers, timeout=5)
-        data = resp.json()
-        if data and data.get('lastPrice'):
-            return data
-    except:
-        return None
+        resp = requests.get(url, headers=headers, timeout=3)
+        return resp.json() if resp.status_code == 200 else None
+    except: return None
 
-# --- 3. UI 佈局 ---
+# --- 3. 戰情室介面佈局 ---
 
-st.title("📊 專業操盤手實時戰情室 (數據穩定版)")
+st.markdown(f"### 🚀 專業操盤手實時戰情室 <small>Session Start: {st.session_state.session_start}</small>", unsafe_allow_html=True)
 
-# 頂部大盤看板 (直接讀取強化快照)
-mkt = get_market_data()
-c1, c2, c3, c4 = st.columns(4)
-with c1: st.metric("台指期 (TXF)", mkt["台指期"]["price"], f"{mkt['台指期']['percent']}%")
-with c2: st.metric("台股加權 (TSE)", mkt["加權指數"]["price"], f"{mkt['加權指數']['percent']}%")
-with c3: st.metric("日經 225", mkt.get("日經 225", {}).get("price", "--"), f"{mkt.get('日經 225', {}).get('percent', '0')}%")
-with c4: st.metric("恒生指數", mkt.get("恒生指數", {}).get("price", "--"), f"{mkt.get('恒生指數', {}).get('percent', '0')}%")
+# 第一層：全球市場連動指標 (Global Market Interconnectivity)
+mkt = get_global_market_sync()
+idx_cols = st.columns(6)
+idx_labels = ["台指期", "加權指數", "TSM(ADR)", "日經 225", "恒生指數", "標普 500"]
+for i, label in enumerate(idx_labels):
+    with idx_cols[i]:
+        st.metric(label, mkt[label]["p"], f"{mkt[label]['pct']}%")
 
-# 側邊控制
+# 側邊欄控制
 with st.sidebar:
-    st.header("監控參數")
-    stock_target = st.text_input("輸入個股代號", value="2330").upper()
-    run_switch = st.toggle("🚀 啟動即時監控", value=False)
+    st.header("🎯 監控配置")
+    target_stock = st.text_input("輸入個股代號", value="2330").upper()
+    monitor_on = st.toggle("開啟監控系統", value=False)
     st.divider()
-    alert_val = st.number_input("掛單異動警示 (張)", value=50)
-    if st.button("🗑️ 清除所有紀錄"):
+    alert_qty = st.number_input("主力大單閾值 (張)", value=50, step=10)
+    
+    if st.button("🗑️ 清空統計數據", use_container_width=True):
         st.session_state.price_stats = {}
         st.session_state.trade_history = []
         st.session_state.order_alerts = []
         st.session_state.last_books_raw = None
         st.rerun()
     
-    # 診斷資訊
-    st.write("---")
-    st.caption(f"最後檢查時間: {datetime.datetime.now().strftime('%H:%M:%S')}")
-    if run_switch:
-        st.success("數據輪詢中...")
-    else:
-        st.warning("監控已停止")
+    st.markdown("""---
+    **操盤提醒：**
+    1. **期現貨價差**：觀察台指期與加權漲跌幅差異。
+    2. **抽單警告**：若壓單撤消失，留意向上突破。
+    """)
 
-# 主畫面佈局
-col_l, col_m, col_r = st.columns([1.1, 1.2, 0.7])
+# 第二層：核心交易數據 (Core Trading Data)
+col_book, col_chart, col_trade = st.columns([1, 1.2, 0.8])
 
-# --- 4. 監控邏輯 ---
+# --- 4. 監控邏輯與渲染 ---
 
-if run_switch:
-    data = fetch_stock_snapshot(stock_target)
+if monitor_on:
+    snap = fetch_stock_snapshot(target_stock)
     
-    if data:
-        # A. 五檔異動分析 (壓單/支撐/抽單)
-        curr_b = {item['price']: item['size'] for item in data.get('bids', [])}
-        curr_a = {item['price']: item['size'] for item in data.get('asks', [])}
+    if snap:
+        # A. 五檔量能異動分析 (Order Book Analysis)
+        bids = {x['price']: x['size'] for x in snap.get('bids', [])}
+        asks = {x['price']: x['size'] for x in snap.get('asks', [])}
         
         if st.session_state.last_books_raw:
-            old_b = st.session_state.last_books_raw['bids']
-            old_a = st.session_state.last_books_raw['asks']
+            old_b, old_a = st.session_state.last_books_raw['b'], st.session_state.last_books_raw['a']
+            # 賣盤：壓單監控
+            for p, s in asks.items():
+                if p in old_a and abs(s - old_a[p]) >= alert_qty:
+                    msg = "🔴 壓單增加" if s > old_a[p] else "⚪ 壓力撤單"
+                    st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {p} | {msg} {abs(s-old_a[p])}張")
+            # 買盤：支撐監控
+            for p, s in bids.items():
+                if p in old_b and abs(s - old_b[p]) >= alert_qty:
+                    msg = "🟢 支撐增加" if s > old_b[p] else "⚪ 支撐撤單"
+                    st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {p} | {msg} {abs(s-old_b[p])}張")
+        
+        st.session_state.last_books_raw = {'b': bids, 'a': asks}
+
+        # B. 多空力道邏輯 (Trade Force Logic)
+        last_p, last_v = snap.get('lastPrice'), snap.get('lastSize')
+        if last_p:
+            ps = str(last_p)
+            if ps not in st.session_state.price_stats: st.session_state.price_stats[ps] = {'買入': 0, '賣出': 0}
             
-            # 比對賣盤變動 (壓力)
-            for p, s in curr_a.items():
-                if p in old_a:
-                    diff = s - old_a[p]
-                    if abs(diff) >= alert_val:
-                        tag = "🔴 壓單增加" if diff > 0 else "⚪ 壓力抽單"
-                        st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {p} | {tag} {abs(diff)}張")
+            # 主動買賣判定：成交價與五檔第一檔比對
+            bid_1 = snap.get('bids', [{}])[0].get('price', 0)
+            if last_p >= bid_1: st.session_state.price_stats[ps]['買入'] += last_v
+            else: st.session_state.price_stats[ps]['賣出'] += last_v
+            
+            st.session_state.trade_history.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {last_p} | {last_v}張")
 
-            # 比對買盤變動 (支撐)
-            for p, s in curr_b.items():
-                if p in old_b:
-                    diff = s - old_b[p]
-                    if abs(diff) >= alert_val:
-                        tag = "🟢 支撐增加" if diff > 0 else "⚪ 支撐抽單"
-                        st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {p} | {tag} {abs(diff)}張")
-
-        st.session_state.last_books_raw = {'bids': curr_b, 'asks': curr_a}
-
-        # B. 渲染 UI
-        with col_l:
-            st.subheader("🏛️ 即時五檔")
-            b_df = pd.DataFrame(data.get('bids', [])).rename(columns={'price':'買價','size':'買量'})
-            a_df = pd.DataFrame(data.get('asks', [])).rename(columns={'price':'賣價','size':'賣量'})
-            st.dataframe(pd.concat([b_df, a_df], axis=1), use_container_width=True)
-            st.subheader("⚠️ 掛單動態分析")
+        # C. UI 渲染
+        with col_book:
+            st.subheader("🏛️ 五檔即時掛單")
+            b_df = pd.DataFrame(snap.get('bids', [])).rename(columns={'price':'買價','size':'買量'})
+            a_df = pd.DataFrame(snap.get('asks', [])).rename(columns={'price':'賣價','size':'賣量'})
+            st.dataframe(pd.concat([b_df, a_df], axis=1), hide_index=True, use_container_width=True)
+            
+            st.subheader("⚠️ 主力動作監控")
             st.code("\n".join(st.session_state.order_alerts[:15]))
 
-        with col_m:
-            st.subheader("📈 分價成交分布")
-            cp, cv = data.get('lastPrice'), data.get('lastSize')
-            if cp:
-                ps = str(cp)
-                if ps not in st.session_state.price_stats: st.session_state.price_stats[ps] = 0
-                st.session_state.price_stats[ps] += cv
-            
+        with col_chart:
+            st.subheader("📈 分價多空量能分布")
             if st.session_state.price_stats:
-                df = pd.DataFrame.from_dict(st.session_state.price_stats, orient='index', columns=['成交量']).sort_index(ascending=False)
-                st.bar_chart(df)
+                df = pd.DataFrame.from_dict(st.session_state.price_stats, orient='index').sort_index(ascending=False)
+                st.bar_chart(df, color=["#FF4B4B", "#00CC96"]) # 🔴買入, 🟢賣出
+                
+                sum_buy = df['買入'].sum()
+                sum_sell = df['賣出'].sum()
+                st.metric("盤中多空淨量", f"{int(sum_buy - sum_sell)} 張", f"累計買入 {int(sum_buy)} / 賣出 {int(sum_sell)}")
                 st.dataframe(df, use_container_width=True)
 
-        with col_r:
-            st.subheader("🔔 即時成交明細")
-            if cp:
-                st.session_state.trade_history.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {cp} | {cv}張")
-            st.code("\n".join(st.session_state.trade_history[:25]))
+        with col_trade:
+            st.subheader("🔔 即時明細")
+            st.code("\n".join(st.session_state.trade_history[:30]))
 
-    time.sleep(2)
+    time.sleep(2) # 兼顧即時性與 API 負載
     st.rerun()
