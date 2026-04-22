@@ -5,14 +5,14 @@ import yfinance as yf
 import random
 import time
 
-st.set_page_config(page_title="Alpha-Trader v28 FIXED", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v28 ULTRA FIX", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# 🧠 STATE SAFE
+# 🧠 STATE (FULL RESTORE)
 # =========================
-for k in ["book", "alerts"]:
+for k in ["book", "alerts", "signals"]:
     if k not in st.session_state:
         st.session_state[k] = []
 
@@ -26,7 +26,7 @@ def f(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL (NEVER REMOVE)
+# 🌍 GLOBAL MARKET
 # =========================
 def global_market():
     idx = {
@@ -64,16 +64,8 @@ def fetch(symbol):
     except:
         pass
 
-    # fallback SIM (NO LOSS)
+    # fallback SIM
     df = yf.Ticker(f"{symbol}.TW").history(period="1d")
-    if df is None or df.empty:
-        return {
-            "bids": [],
-            "asks": [],
-            "lastPrice": None,
-            "lastSize": None
-        }, "FAIL"
-
     p = float(df["Close"].iloc[-1])
 
     return {
@@ -84,7 +76,45 @@ def fetch(symbol):
     }, "SIM"
 
 # =========================
-# SAFE TABLE
+# ORDER FLOW ENGINE（你缺的）
+# =========================
+def order_flow(curr, prev):
+    alerts = []
+
+    if not prev:
+        return alerts
+
+    try:
+        for i in range(2):
+            cb = curr["bids"][i]
+            pb = prev["bids"][i]
+
+            ca = curr["asks"][i]
+            pa = prev["asks"][i]
+
+            # 🟢 買單加單
+            if cb["size"] > pb["size"] * 1.5:
+                alerts.append(f"🟢 買盤加單 {cb['price']:.2f}")
+
+            # ⚪ 買單抽單
+            if cb["size"] < pb["size"] * 0.5:
+                alerts.append(f"⚪ 買盤抽單 {cb['price']:.2f}")
+
+            # 🔴 賣壓加單
+            if ca["size"] > pa["size"] * 1.5:
+                alerts.append(f"🔴 賣壓加單 {ca['price']:.2f}")
+
+            # ⚪ 賣壓抽單
+            if ca["size"] < pa["size"] * 0.5:
+                alerts.append(f"⚪ 賣壓抽單 {ca['price']:.2f}")
+
+    except:
+        pass
+
+    return alerts
+
+# =========================
+# SAFE BOOK
 # =========================
 def book(bids, asks):
     try:
@@ -99,12 +129,12 @@ def book(bids, asks):
             "賣量": [x.get("size") for x in asks],
         })
     except:
-        return pd.DataFrame(columns=["買價","買量","賣價","賣量"])
+        return pd.DataFrame()
 
 # =========================
-# UI CONTRACT (CORE NEVER DISAPPEARS)
+# UI
 # =========================
-st.title("🏛️ v28 FIXED Stable Trading Engine")
+st.title("🏛️ v28 ULTRA FIX FULL ENGINE")
 
 symbol = st.text_input("股票代碼", "2330")
 
@@ -117,7 +147,7 @@ lp = snap.get("lastPrice")
 lv = snap.get("lastSize")
 
 # =========================
-# 🌍 GLOBAL (MUST ALWAYS SHOW)
+# 🌍 GLOBAL
 # =========================
 st.subheader("🌍 全球市場")
 
@@ -131,14 +161,27 @@ for i, (k, v) in enumerate(g.items()):
 st.divider()
 
 # =========================
-# 📊 ORDERBOOK (MUST ALWAYS SHOW)
+# 📊 BOOK
 # =========================
 st.subheader("📊 五檔")
 
 st.dataframe(book(bids, asks), use_container_width=True)
 
 # =========================
-# 📡 PRICE (MUST ALWAYS SHOW)
+# 🧠 ORDER FLOW（補回來）
+# =========================
+curr = {"bids": bids, "asks": asks}
+prev = st.session_state.book
+
+alerts = order_flow(curr, prev)
+
+for a in alerts:
+    st.session_state.alerts.insert(0, a)
+
+st.session_state.book = curr
+
+# =========================
+# 📡 TRADE
 # =========================
 st.subheader("📡 即時成交")
 
@@ -146,13 +189,14 @@ st.metric("成交價", f(lp))
 st.metric("成交量", lv)
 
 # =========================
-# 🚨 STATUS (MUST ALWAYS SHOW)
+# 🚨 ALERTS（補回來）
 # =========================
-st.subheader("🚨 系統狀態")
-st.write(mode)
+st.subheader("🚨 Order Flow 警報")
+
+st.code("\n".join(st.session_state.alerts[:20]) or "無")
 
 # =========================
-# LOOP SAFE
+# 🔁 LOOP
 # =========================
 time.sleep(2)
 st.rerun()
