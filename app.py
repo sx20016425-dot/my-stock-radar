@@ -1,54 +1,36 @@
 import streamlit as st
-import subprocess
-import sys
-import time
-
-# --- 強制安裝功能 (這段放在最上面) ---
-def install_requirements():
-    try:
-        from fugle_marketdata import WebMdaClient
-    except ImportError:
-        with st.spinner('正在進行底層環境初始化，請稍候約 30 秒...'):
-            # 強制安裝套件
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "fugle-marketdata==2.4.1"])
-            st.success("環境修復成功！正在啟動...")
-            time.sleep(2)
-            st.rerun() # 安裝完後自動重啟
-
-# 執行安裝檢查
-install_requirements()
-
-# --- 這裡開始才是原本的程式碼 ---
 import pandas as pd
 import asyncio
-from fugle_marketdata import WebMdaClient
 import datetime
+from fugle_marketdata import WebMdaClient
 
-st.set_page_config(page_title="大戶盤口監控-穩定版", layout="wide")
+# 頁面配置
+st.set_page_config(page_title="大戶盤口監控", layout="wide")
 
-# 讀取 Secrets
+# 檢查 Secrets
 if "FUGLE_API_KEY" not in st.secrets:
     st.error("❌ 找不到 API Key。請在 Streamlit Cloud 的 Secrets 設定 FUGLE_API_KEY")
     st.stop()
 
 API_KEY = st.secrets["FUGLE_API_KEY"]
 
-# UI 佈局
-st.title("🛡️ 即時盤口大單監控")
+# UI 介面
+st.title("📈 實時盤口大單監控")
 target = st.sidebar.text_input("股票/期貨代號", value="3042")
 threshold = st.sidebar.number_input("大單門檻 (張)", value=50)
 
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("五檔掛單")
+    st.subheader("🛡️ 五檔掛單")
     book_spot = st.empty()
 with col2:
-    st.subheader("成交紀錄")
+    st.subheader("⚔️ 成交紀錄")
     trade_spot = st.empty()
 
 if 'history' not in st.session_state:
     st.session_state.history = []
 
+# --- 數據處理 ---
 async def main():
     client = WebMdaClient(api_key=API_KEY)
     stock = client.stock
@@ -78,5 +60,5 @@ async def handle_t(conn):
             st.session_state.history.insert(0, log)
             trade_spot.code("\n".join(st.session_state.history[:15]))
 
-if st.sidebar.button("開始極速監控"):
+if st.sidebar.button("🚀 開始即時監控"):
     asyncio.run(main())
