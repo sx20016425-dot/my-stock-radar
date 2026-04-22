@@ -2,17 +2,17 @@ import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-import random
 import time
+import random
 
-st.set_page_config(page_title="Alpha-Trader v28 ULTRA FIX", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v29 Full Restore", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# 🧠 STATE (FULL RESTORE)
+# 🧠 STATE (ALL RESTORED)
 # =========================
-for k in ["book", "alerts", "signals"]:
+for k in ["book", "alerts", "signals", "trades"]:
     if k not in st.session_state:
         st.session_state[k] = []
 
@@ -26,15 +26,16 @@ def f(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL MARKET
+# 🌍 GLOBAL MARKET (RESTORED)
 # =========================
 def global_market():
     idx = {
-        "S&P500": "^GSPC",
-        "NASDAQ": "^IXIC",
         "日經": "^N225",
         "恆生": "^HSI",
-        "韓國": "^KS11"
+        "韓國": "^KS11",
+        "加權": "^TWII",
+        "S&P500": "^GSPC",
+        "NASDAQ": "^IXIC"
     }
 
     out = {}
@@ -43,14 +44,14 @@ def global_market():
             df = yf.Ticker(v).history(period="2d")
             p = float(df["Close"].iloc[-1])
             prev = float(df["Close"].iloc[-2])
-            out[k] = (p, (p - prev) / prev * 100)
+            out[k] = (p, (p-prev)/prev*100)
         except:
             out[k] = (None, None)
 
     return out
 
 # =========================
-# STOCK ENGINE
+# 📊 STOCK ENGINE
 # =========================
 def fetch(symbol):
     try:
@@ -69,18 +70,32 @@ def fetch(symbol):
     p = float(df["Close"].iloc[-1])
 
     return {
-        "bids": [{"price": p-i*0.5, "size": random.randint(10,80)} for i in range(5)],
-        "asks": [{"price": p+i*0.5, "size": random.randint(10,80)} for i in range(5)],
+        "bids": [{"price": p-i*0.5, "size": random.randint(10,100)} for i in range(5)],
+        "asks": [{"price": p+i*0.5, "size": random.randint(10,100)} for i in range(5)],
         "lastPrice": p,
-        "lastSize": random.randint(1,50)
+        "lastSize": random.randint(1,80)
     }, "SIM"
 
 # =========================
-# ORDER FLOW ENGINE（你缺的）
+# 📊 ORDER BOOK (RESTORED)
+# =========================
+def book(bids, asks):
+    n = 5
+    bids = (bids or []) + [{} for _ in range(n - len(bids or []))]
+    asks = (asks or []) + [{} for _ in range(n - len(asks or []))]
+
+    return pd.DataFrame({
+        "買價": [x.get("price") for x in bids],
+        "買量": [x.get("size") for x in bids],
+        "賣價": [x.get("price") for x in asks],
+        "賣量": [x.get("size") for x in asks],
+    })
+
+# =========================
+# 🧠 ORDER FLOW (RESTORED CORE)
 # =========================
 def order_flow(curr, prev):
     alerts = []
-
     if not prev:
         return alerts
 
@@ -92,21 +107,19 @@ def order_flow(curr, prev):
             ca = curr["asks"][i]
             pa = prev["asks"][i]
 
-            # 🟢 買單加單
+            # 🟢 buy pressure
             if cb["size"] > pb["size"] * 1.5:
-                alerts.append(f"🟢 買盤加單 {cb['price']:.2f}")
+                alerts.append(f"🟢 買單加壓 {cb['price']:.2f}")
 
-            # ⚪ 買單抽單
             if cb["size"] < pb["size"] * 0.5:
-                alerts.append(f"⚪ 買盤抽單 {cb['price']:.2f}")
+                alerts.append(f"⚪ 買單抽離 {cb['price']:.2f}")
 
-            # 🔴 賣壓加單
+            # 🔴 sell pressure
             if ca["size"] > pa["size"] * 1.5:
                 alerts.append(f"🔴 賣壓加單 {ca['price']:.2f}")
 
-            # ⚪ 賣壓抽單
             if ca["size"] < pa["size"] * 0.5:
-                alerts.append(f"⚪ 賣壓抽單 {ca['price']:.2f}")
+                alerts.append(f"⚪ 賣壓撤單 {ca['price']:.2f}")
 
     except:
         pass
@@ -114,27 +127,9 @@ def order_flow(curr, prev):
     return alerts
 
 # =========================
-# SAFE BOOK
-# =========================
-def book(bids, asks):
-    try:
-        n = 5
-        bids = (bids or []) + [{} for _ in range(n - len(bids or []))]
-        asks = (asks or []) + [{} for _ in range(n - len(asks or []))]
-
-        return pd.DataFrame({
-            "買價": [x.get("price") for x in bids],
-            "買量": [x.get("size") for x in bids],
-            "賣價": [x.get("price") for x in asks],
-            "賣量": [x.get("size") for x in asks],
-        })
-    except:
-        return pd.DataFrame()
-
-# =========================
 # UI
 # =========================
-st.title("🏛️ v28 ULTRA FIX FULL ENGINE")
+st.title("🏛️ v29 FULL RESTORE Trading Engine")
 
 symbol = st.text_input("股票代碼", "2330")
 
@@ -147,7 +142,7 @@ lp = snap.get("lastPrice")
 lv = snap.get("lastSize")
 
 # =========================
-# 🌍 GLOBAL
+# 🌍 GLOBAL (RESTORED)
 # =========================
 st.subheader("🌍 全球市場")
 
@@ -161,14 +156,24 @@ for i, (k, v) in enumerate(g.items()):
 st.divider()
 
 # =========================
-# 📊 BOOK
+# 📊 BOOK (RESTORED)
 # =========================
 st.subheader("📊 五檔")
 
 st.dataframe(book(bids, asks), use_container_width=True)
 
 # =========================
-# 🧠 ORDER FLOW（補回來）
+# 📡 TRADE (RESTORED)
+# =========================
+st.subheader("📡 即時成交")
+
+st.metric("成交價", f(lp))
+st.metric("成交量", lv)
+
+st.session_state.trades.insert(0, f"{lp} | {lv}")
+
+# =========================
+# 🧠 ORDER FLOW (RESTORED)
 # =========================
 curr = {"bids": bids, "asks": asks}
 prev = st.session_state.book
@@ -181,15 +186,7 @@ for a in alerts:
 st.session_state.book = curr
 
 # =========================
-# 📡 TRADE
-# =========================
-st.subheader("📡 即時成交")
-
-st.metric("成交價", f(lp))
-st.metric("成交量", lv)
-
-# =========================
-# 🚨 ALERTS（補回來）
+# 🚨 ALERTS (RESTORED)
 # =========================
 st.subheader("🚨 Order Flow 警報")
 
