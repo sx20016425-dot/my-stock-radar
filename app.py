@@ -4,41 +4,53 @@ import asyncio
 import datetime
 from fugle_marketdata import WebMdaClient
 
-# 頁面配置
-st.set_page_config(page_title="大戶盤口監控", layout="wide")
+# --- 介面配置 ---
+st.set_page_config(page_title="即時盤口監控", layout="wide")
 
-# 檢查 Secrets
+# --- 檢查環境 ---
 if "FUGLE_API_KEY" not in st.secrets:
-    st.error("❌ 找不到 API Key。請在 Streamlit Cloud 的 Secrets 設定 FUGLE_API_KEY")
+    st.error("❌ 請在 Secrets 中設定 FUGLE_API_KEY")
     st.stop()
 
 API_KEY = st.secrets["FUGLE_API_KEY"]
 
-# UI 介面
-st.title("📈 實時盤口大單監控")
-target = st.sidebar.text_input("股票/期貨代號", value="3042")
-threshold = st.sidebar.number_input("大單門檻 (張)", value=50)
+# --- UI 佈局 ---
+st.title("📈 大戶盤口實時監控")
+with st.sidebar:
+    target = st.text_input("輸入股票代號", value="3042")
+    threshold = st.number_input("大單門檻 (張)", value=50)
+    start_btn = st.button("🚀 開始即時監控")
 
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("🛡️ 五檔掛單")
+    st.subheader("🛡️ 五檔委託")
     book_spot = st.empty()
 with col2:
-    st.subheader("⚔️ 成交紀錄")
+    st.subheader("⚔️ 成交明細")
     trade_spot = st.empty()
 
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-# --- 數據處理 ---
-async def main():
+# --- WebSocket 邏輯 ---
+async def start_monitor():
     client = WebMdaClient(api_key=API_KEY)
     stock = client.stock
-    async with stock.connect_quote(symbol=target) as q_conn, \
-               stock.connect_trade(symbol=target) as t_conn:
-        await asyncio.gather(handle_q(q_conn), handle_t(t_conn))
+    try:
+        async with stock.connect_quote(symbol=target) as q_conn, \
+                   stock.connect_trade(symbol=target) as t_conn:
+            
+            st.toast(f"✅ 已連線至 {target}", icon="🚀")
+            
+            # 建立併發任務
+            await asyncio.gather(
+                handle_quote(q_conn),
+                handle_trade(t_conn)
+            )
+    except Exception as e:
+        st.error(f"連線發生錯誤: {e}")
 
-async def handle_q(conn):
+async def handle_quote(conn):
     async for msg in conn:
         if msg.get('event') == 'data':
             d = msg['data']
@@ -50,15 +62,16 @@ async def handle_q(conn):
             })
             book_spot.table(df)
 
-async def handle_t(conn):
+async def handle_trade(conn):
     async for msg in conn:
         if msg.get('event') == 'data':
             d = msg['data']
             p, v = d.get('price'), d.get('size')
-            t = datetime.datetime.now().strftime("%H:%M:%S")
-            log = f"{'🔥' if v >= threshold else '⚪'} {t} | 價: {p} | 量: {v}"
+            now = datetime.datetime.now().strftime("%H:%M:%S")
+            log = f"{'🔥' if v >= threshold else '⚪'} {now} | 價: {p} | 量: {v}"
             st.session_state.history.insert(0, log)
             trade_spot.code("\n".join(st.session_state.history[:15]))
 
-if st.sidebar.button("🚀 開始即時監控"):
-    asyncio.run(main())
+# --- 啟動 ---
+if start_btn:
+    asyncio.run(start_monitor())
