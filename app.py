@@ -5,168 +5,159 @@ import time
 import requests
 import yfinance as yf
 
-# --- 1. 配置與核心初始化 ---
+# --- 1. 專業版樣式注入 (Custom CSS) ---
+st.set_page_config(page_title="Alpha-Trader Terminal", layout="wide", initial_sidebar_state="collapsed")
+
+st.markdown("""
+    <style>
+    .main { background-color: #0E1117; }
+    div[data-testid="stMetricValue"] { font-size: 24px; font-weight: 700; color: #FFFFFF; }
+    div[data-testid="stMetricDelta"] { font-size: 14px; }
+    .stCodeBlock { border-radius: 8px; border: 1px solid #30363D; }
+    .stDataFrame { border: 1px solid #30363D; border-radius: 8px; }
+    h3 { color: #8B949E; font-size: 16px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+    .status-tag { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 2. 核心初始化 ---
 API_KEY = "MWI2Y2NlMTYtZmNjNy00NGJmLWFkMTYtNDVjZjk2MjJkNzFhIDA1YTliNzZhLWI0NzItNGYxMS1iYTIxLWYyN2ZkNjgzNzI5YQ=="
 
-st.set_page_config(page_title="專業操盤戰情室 | 終極版", layout="wide", initial_sidebar_state="expanded")
+# 狀態管理
+for key, val in {
+    'price_stats': {}, 'trade_history': [], 'order_alerts': [], 
+    'last_books_raw': None, 'mkt_cache': {k: {"p": "--", "pct": "0.00"} for k in ["台指期", "加權指數", "TSM(ADR)", "日經 225", "恒生指數", "標普 500"]}
+}.items():
+    if key not in st.session_state: st.session_state[key] = val
 
-# 狀態持久化：確保數據即便在 Rerun 時也不會清空
-if 'price_stats' not in st.session_state: st.session_state.price_stats = {}
-if 'trade_history' not in st.session_state: st.session_state.trade_history = []
-if 'order_alerts' not in st.session_state: st.session_state.order_alerts = []
-if 'last_books_raw' not in st.session_state: st.session_state.last_books_raw = None
-if 'mkt_cache' not in st.session_state: 
-    st.session_state.mkt_cache = {k: {"p": "--", "pct": "0.00"} for k in ["台指期", "加權指數", "TSM(ADR)", "日經 225", "恒生指數", "標普 500"]}
-
-# --- 2. 數據引擎：解決 0 數據問題 ---
+# --- 3. 高效能數據引擎 ---
 
 def get_market_sync():
-    """多代號輪詢機制，確保台指期必定有值"""
-    # 針對台指期進行多重探測
-    tx_symbols = ["WTX=F", "TX=F", "^TWII"] # 備選名單
-    found_tx = False
+    """多線程思維：確保大盤與期貨數據不跳 0"""
+    tx_symbols = ["WTX=F", "TX=F", "^TWII"]
+    targets = {"加權指數": "^TWII", "TSM(ADR)": "TSM", "日經 225": "^N225", "恒生指數": "^HSI", "標普 500": "^GSPC"}
     
-    # 全球指標清單
-    targets = {
-        "加權指數": "^TWII", 
-        "TSM(ADR)": "TSM", 
-        "日經 225": "^N225", 
-        "恒生指數": "^HSI", 
-        "標普 500": "^GSPC"
-    }
-
-    # 1. 優先處理台指期
+    # 台指期專屬邏輯
     for sym in tx_symbols:
         try:
             t = yf.Ticker(sym)
             df = t.history(period="1d")
             if not df.empty and df['Close'].iloc[-1] > 0:
-                p = df['Close'].iloc[-1]
-                prev = t.info.get('previousClose', p)
-                pct = ((p - prev) / prev) * 100
+                p, pct = df['Close'].iloc[-1], ((df['Close'].iloc[-1] - t.info.get('previousClose', df['Close'].iloc[-1])) / t.info.get('previousClose', 1)) * 100
                 st.session_state.mkt_cache["台指期"] = {"p": f"{p:.0f}", "pct": f"{pct:.2f}"}
-                found_tx = True
                 break
         except: continue
-    
-    # 2. 處理其他指標
+        
     for label, sym in targets.items():
         try:
-            t = yf.Ticker(sym)
-            df = t.history(period="1d")
+            t = yf.Ticker(sym); df = t.history(period="1d")
             if not df.empty:
                 p = df['Close'].iloc[-1]
-                prev = t.info.get('previousClose', p)
-                pct = ((p - prev) / prev) * 100
-                st.session_state.mkt_cache[label] = {
-                    "p": f"{p:.2f}" if "." in label or "ADR" in label else f"{p:.0f}",
-                    "pct": f"{pct:.2f}"
-                }
+                pct = ((p - t.info.get('previousClose', p)) / t.info.get('previousClose', 1)) * 100
+                st.session_state.mkt_cache[label] = {"p": f"{p:.2f}" if "ADR" in label or "500" in label else f"{p:.0f}", "pct": f"{pct:.2f}"}
         except: pass
     return st.session_state.mkt_cache
 
-def fetch_stock_snapshot(symbol):
-    """Fugle REST API 備援請求"""
+def fetch_snapshot(symbol):
     url = f"https://api.fugle.tw/marketdata/v1.0/stock/snapshot/quotes/{symbol}"
-    headers = {"X-API-KEY": API_KEY}
     try:
-        resp = requests.get(url, headers=headers, timeout=3)
+        resp = requests.get(url, headers={"X-API-KEY": API_KEY}, timeout=3)
         return resp.json() if resp.status_code == 200 else None
     except: return None
 
-# --- 3. UI 渲染 (保證所有功能區塊恆常存在) ---
+# --- 4. App 佈局設計 ---
 
-st.markdown(f"### 🚀 專業操盤手實時戰情室 | <small>穩定監控中</small>", unsafe_allow_html=True)
+# Header Section
+st.markdown("## ⚡ Alpha-Trader <span style='color:#58A6FF'>Terminal</span>", unsafe_allow_html=True)
 
-# 指數區塊 (即便是 0 也要顯示最後快取)
+# 指數看板 (Dashboard)
 mkt = get_market_sync()
-idx_cols = st.columns(6)
+idx_row = st.columns(6)
 for i, label in enumerate(["台指期", "加權指數", "TSM(ADR)", "日經 225", "恒生指數", "標普 500"]):
-    with idx_cols[i]:
-        st.metric(label, mkt[label]["p"], f"{mkt[label]['pct']}%")
+    with idx_row[i]:
+        color = "#FF4B4B" if "-" in mkt[label]["pct"] else "#00CC96"
+        st.metric(label, mkt[label]["p"], f"{mkt[label]['pct']}%", delta_color="normal")
 
-# 側邊欄配置
+st.divider()
+
+# 側邊監控中心
 with st.sidebar:
-    st.header("🎯 系統控制")
-    target_stock = st.text_input("監控個股", value="2330").upper()
-    monitor_on = st.toggle("啟動實時更新", value=True)
+    st.header("⚙️ SYSTEM CONFIG")
+    target_stock = st.text_input("TICKER", value="2330").upper()
+    monitor_on = st.toggle("LIVE DATA FEED", value=True)
     st.divider()
-    alert_qty = st.number_input("大單異動閥值", value=50)
-    if st.button("🗑️ 重置統計", use_container_width=True):
-        st.session_state.price_stats = {}
-        st.session_state.trade_history = []
-        st.session_state.order_alerts = []
-        st.session_state.last_books_raw = None
-        st.rerun()
+    alert_qty = st.number_input("BLOCK TRADE THRESHOLD", value=50)
+    if st.button("RESET ALL DATA"):
+        st.session_state.price_stats = {}; st.session_state.trade_history = []; st.session_state.order_alerts = []; st.session_state.last_books_raw = None; st.rerun()
+    
+    if monitor_on:
+        st.markdown("<span class='status-tag' style='background:#1F6745; color:#00FF00'>● CONNECTED</span>", unsafe_allow_html=True)
+    else:
+        st.markdown("<span class='status-tag' style='background:#442222; color:#FF4444'>● DISCONNECTED</span>", unsafe_allow_html=True)
 
-# 佈局定義：確保版面不因數據而閃爍
-col_left, col_mid, col_right = st.columns([1, 1.2, 0.8])
+# 核心數據區 (Core Data View)
+col_main, col_side = st.columns([2.2, 0.8])
 
-with col_left:
-    st.subheader("🏛️ 五檔掛單")
-    book_placeholder = st.empty()
-    st.subheader("⚠️ 主力異動監控")
-    alert_placeholder = st.empty()
+with col_main:
+    # 第一排：五檔與分價
+    c1, c2 = st.columns([1, 1.2])
+    with c1:
+        st.subheader("🏛️ ORDER BOOK")
+        book_ui = st.empty()
+    with c2:
+        st.subheader("📈 PRICE PROFILE")
+        chart_ui = st.empty()
+        metric_ui = st.empty()
+    
+    # 第二排：主力異動 (滿版顯示增加氣勢)
+    st.subheader("🚨 INSTITUTIONAL MOVES (ORDER FLOW ALERTS)")
+    alert_ui = st.empty()
 
-with col_mid:
-    st.subheader("📈 多空量能分布")
-    chart_placeholder = st.empty()
-    metric_placeholder = st.empty()
-    table_placeholder = st.empty()
+with col_side:
+    st.subheader("🔔 TIME & SALES")
+    trade_ui = st.empty()
 
-with col_right:
-    st.subheader("🔔 即時明細")
-    trade_placeholder = st.empty()
-
-# --- 4. 監控迴圈邏輯 ---
+# --- 5. 執行監控與分析 ---
 
 if monitor_on:
-    snap = fetch_stock_snapshot(target_stock)
-    
+    snap = fetch_snapshot(target_stock)
     if snap:
-        # A. 五檔與主力監控邏輯
+        # A. 數據計算邏輯
         bids = {x['price']: x['size'] for x in snap.get('bids', [])}
         asks = {x['price']: x['size'] for x in snap.get('asks', [])}
         
         if st.session_state.last_books_raw:
             old_b, old_a = st.session_state.last_books_raw['b'], st.session_state.last_books_raw['a']
-            # 賣盤(壓單)
             for p, s in asks.items():
                 if p in old_a and abs(s - old_a[p]) >= alert_qty:
-                    tag = "🔴 壓單增加" if s > old_a[p] else "⚪ 壓力撤單"
-                    st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {p} | {tag} {abs(s-old_a[p])}張")
-            # 買盤(支撐)
+                    st.session_state.order_alerts.insert(0, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] PRICE {p} | {'🔴 ADD' if s > old_a[p] else '⚪ CANCEL'} PRESSURE: {abs(s-old_a[p])} LOTS")
             for p, s in bids.items():
                 if p in old_b and abs(s - old_b[p]) >= alert_qty:
-                    tag = "🟢 支撐增加" if s > old_b[p] else "⚪ 支撐撤單"
-                    st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {p} | {tag} {abs(s-old_b[p])}張")
+                    st.session_state.order_alerts.insert(0, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] PRICE {p} | {'🟢 ADD' if s > old_b[p] else '⚪ CANCEL'} SUPPORT: {abs(s-old_b[p])} LOTS")
         st.session_state.last_books_raw = {'b': bids, 'a': asks}
 
-        # B. 多空計量邏輯
         lp, lv = snap.get('lastPrice'), snap.get('lastSize')
         if lp:
             ps = str(lp)
-            if ps not in st.session_state.price_stats: st.session_state.price_stats[ps] = {'買入': 0, '賣出': 0}
-            # 以買一價判斷買賣方力量
+            if ps not in st.session_state.price_stats: st.session_state.price_stats[ps] = {'B': 0, 'S': 0}
             b1 = snap.get('bids', [{}])[0].get('price', 0)
-            if lp >= b1: st.session_state.price_stats[ps]['買入'] += lv
-            else: st.session_state.price_stats[ps]['賣出'] += lv
+            if lp >= b1: st.session_state.price_stats[ps]['B'] += lv
+            else: st.session_state.price_stats[ps]['S'] += lv
             st.session_state.trade_history.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {lp} | {lv}張")
 
-        # C. 渲染數據到 Placeholder (防止 UI 消失)
-        b_df = pd.DataFrame(snap.get('bids', [])).rename(columns={'price':'買價','size':'買量'})
-        a_df = pd.DataFrame(snap.get('asks', [])).rename(columns={'price':'賣價','size':'賣量'})
-        book_placeholder.dataframe(pd.concat([b_df, a_df], axis=1), hide_index=True, use_container_width=True)
-        alert_placeholder.code("\n".join(st.session_state.order_alerts[:15]))
-
+        # B. 渲染 UI
+        b_df = pd.DataFrame(snap.get('bids', [])).rename(columns={'price':'BUY','size':'VOL_B'})
+        a_df = pd.DataFrame(snap.get('asks', [])).rename(columns={'price':'SELL','size':'VOL_S'})
+        book_ui.dataframe(pd.concat([b_df, a_df], axis=1), hide_index=True, use_container_width=True)
+        
         if st.session_state.price_stats:
             df = pd.DataFrame.from_dict(st.session_state.price_stats, orient='index').sort_index(ascending=False)
-            chart_placeholder.bar_chart(df, color=["#FF4B4B", "#00CC96"])
-            t_buy, t_sell = df['買入'].sum(), df['賣出'].sum()
-            metric_placeholder.metric("多空淨力道", f"{int(t_buy - t_sell)} 張", f"買 {int(t_buy)} / 賣 {int(t_sell)}")
-            table_placeholder.dataframe(df, use_container_width=True)
-
-        trade_placeholder.code("\n".join(st.session_state.trade_history[:35]))
+            chart_ui.bar_chart(df, color=["#FF4B4B", "#00CC96"], height=250)
+            tb, ts = df['B'].sum(), df['S'].sum()
+            metric_ui.metric("NET BUYING FORCE", f"{int(tb - ts)} 張", f"Accumulated: {int(tb+ts)}", delta_color="inverse")
+        
+        alert_ui.code("\n".join(st.session_state.order_alerts[:10]), language="bash")
+        trade_ui.code("\n".join(st.session_state.trade_history[:40]), language="python")
 
     time.sleep(2)
     st.rerun()
