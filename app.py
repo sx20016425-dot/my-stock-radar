@@ -6,12 +6,12 @@ import time
 import random
 import datetime
 
-st.set_page_config(page_title="Alpha-Trader v20 INSTITUTIONAL FLOW", layout="wide")
+st.set_page_config(page_title="Alpha Trader v21 CONTROL DECK", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# STATE (完全保留 + 擴充)
+# STATE (完全保留 v20)
 # =========================
 for k in ["last_book", "alerts", "trades", "signals", "flow_state"]:
     if k not in st.session_state:
@@ -27,7 +27,7 @@ def f2(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL MARKET (保留)
+# 🌍 GLOBAL MARKET (TOP BAR)
 # =========================
 @st.cache_data(ttl=5)
 def fetch_global():
@@ -50,7 +50,7 @@ def fetch_global():
     return out
 
 # =========================
-# STOCK ENGINE (保留)
+# STOCK ENGINE
 # =========================
 def fetch_stock(symbol):
     try:
@@ -78,7 +78,7 @@ def fetch_stock(symbol):
     }, "SIM"
 
 # =========================
-# BOOK (保留)
+# BOOK
 # =========================
 def safe_book(bids, asks):
     bids = bids + [{} for _ in range(5-len(bids))]
@@ -92,7 +92,7 @@ def safe_book(bids, asks):
     })
 
 # =========================
-# 📈 DELTA (保留 + 強化)
+# DELTA ENGINE
 # =========================
 def delta(curr, prev):
     if not prev:
@@ -102,7 +102,6 @@ def delta(curr, prev):
     for i in range(2):
         cb = curr["bids"][i]
         pb = prev["bids"][i]
-
         ca = curr["asks"][i]
         pa = prev["asks"][i]
 
@@ -114,79 +113,50 @@ def delta(curr, prev):
     return pd.DataFrame(rows, columns=["買價","買量Δ","賣價","賣量Δ"])
 
 # =========================
-# 🧠 INSTITUTIONAL FLOW ENGINE（新增核心）
+# FLOW ENGINE (保留)
 # =========================
-def institutional_flow(curr, prev):
-    signals = []
-
+def flow(curr, prev):
+    out = []
     if not prev:
-        return signals
+        return out
 
-    try:
-        for i in range(2):
+    for i in range(2):
+        cb = curr["bids"][i]
+        pb = prev["bids"][i]
+        ca = curr["asks"][i]
+        pa = prev["asks"][i]
 
-            cb = curr["bids"][i]
-            pb = prev["bids"][i]
+        if cb["size"] > pb["size"]*1.5:
+            out.append("🟢 買單加壓")
 
-            ca = curr["asks"][i]
-            pa = prev["asks"][i]
+        if ca["size"] > pa["size"]*1.5:
+            out.append("🔴 賣壓加單")
 
-            # =========================
-            # 🧲 1. 主力吸籌
-            # =========================
-            if cb["size"] > pb["size"] * 2:
-                signals.append("🟢 主力吸籌（買單堆積）")
+        if cb["size"] < pb["size"]*0.5:
+            out.append("⚪ 買單抽離")
 
-            # =========================
-            # 🔴 出貨壓盤
-            # =========================
-            if ca["size"] > pa["size"] * 2:
-                signals.append("🔴 主力壓盤（賣單堆積）")
+        if ca["size"] < pa["size"]*0.5:
+            out.append("⚪ 賣單撤單")
 
-            # =========================
-            # ⚡ 3. 快速抽單（假盤）
-            # =========================
-            if cb["size"] < pb["size"] * 0.4:
-                signals.append("⚠️ 買單抽離（假跌破）")
-
-            if ca["size"] < pa["size"] * 0.4:
-                signals.append("⚠️ 賣單撤單（假突破）")
-
-        # =========================
-        # ⚡ 4. 成交攻擊力
-        # =========================
-        spread = curr["lastPrice"]
-
-        bid1 = curr["bids"][0]["size"]
-        ask1 = curr["asks"][0]["size"]
-
-        if bid1 > ask1 * 1.8:
-            signals.append("🚀 買方攻擊力強")
-
-        if ask1 > bid1 * 1.8:
-            signals.append("📉 賣方攻擊力強")
-
-    except:
-        pass
-
-    return signals
+    return out
 
 # =========================
-# UI
+# UI HEADER (移除標題 ✔)
 # =========================
-st.title("🏛️ Alpha-Trader v20 INSTITUTIONAL ORDER FLOW")
 
 symbol = st.text_input("股票代碼", "2330")
 
 # =========================
-# GLOBAL
+# 🌍 TOP GLOBAL MARKET (縮小 + 最上)
 # =========================
 g = fetch_global()
-cols = st.columns(4)
+
+top_cols = st.columns(4)
 
 for i,(k,v) in enumerate(g.items()):
     p,pct = v
-    cols[i].metric(k, f2(p), f"{pct:.2f}%")
+    with top_cols[i]:
+        st.metric(k, f2(p), f"{pct:.2f}%")
 
 st.divider()
 
@@ -206,47 +176,55 @@ lp = snap["lastPrice"]
 lv = snap["lastSize"]
 
 # =========================
-# BOOK
+# LAYOUT CORE (你的要求重排)
 # =========================
-st.subheader("📊 五檔（完整盤口）")
-st.dataframe(safe_book(bids,asks), use_container_width=True)
+left, right = st.columns([1, 2])
 
 # =========================
-# DELTA
+# LEFT COLUMN
 # =========================
-st.subheader("📈 掛單變化（Delta）")
-st.dataframe(delta(snap, st.session_state.last_book), use_container_width=True)
+with left:
+
+    st.subheader("📊 五檔（盤口）")
+    st.dataframe(safe_book(bids,asks), use_container_width=True)
 
 # =========================
-# INSTITUTIONAL FLOW
+# RIGHT COLUMN SPLIT
 # =========================
-flow = institutional_flow(snap, st.session_state.last_book)
-
-for f in flow:
-    st.session_state.alerts.insert(0, f)
-
-st.session_state.last_book = snap
+right_top, right_bottom = st.columns([1,1])
 
 # =========================
-# METRICS
+# RIGHT TOP (DELTA)
 # =========================
-c1,c2,c3 = st.columns(3)
+with right_top:
 
-with c1:
+    st.subheader("📈 掛單變化（Delta）")
+    st.dataframe(delta(snap, st.session_state.last_book), use_container_width=True)
+
+# =========================
+# RIGHT BOTTOM (CONTROL WALL)
+# =========================
+with right_bottom:
+
+    st.subheader("🧠 監控狀態牆")
+
+    flow_data = flow(snap, st.session_state.last_book)
+
+    for f in flow_data:
+        st.session_state.alerts.insert(0, f)
+
+    st.code("\n".join(st.session_state.alerts[:25]) or "無")
+
+    st.divider()
+
     st.metric("成交價", f2(lp))
-
-with c2:
     st.metric("成交量", lv)
-
-with c3:
     st.metric("模式", mode)
 
 # =========================
-# SIGNAL BOARD
+# SAVE STATE
 # =========================
-st.subheader("🚨 機構級籌碼訊號")
-
-st.code("\n".join(st.session_state.alerts[:40]) or "無訊號")
+st.session_state.last_book = snap
 
 # =========================
 # LOOP
