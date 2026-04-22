@@ -7,7 +7,7 @@ import time
 import queue
 
 # --- 1. 核心參數與初始化 ---
-API_KEY = "ZGFiYmNkMjgtY2JjMy00YmRiLWFhOWItMWM3NDljY2VmNzRlIDcwZTM1OGUzLTYzNjItNDFiZC1hOGFlLWYxNmIyMDU4ZjU0Ng"
+API_KEY = "MWI2Y2NlMTYtZmNjNy00NGJmLWFkMTYtNDVjZjk2MjJkNzFhIDA1YTliNzZhLWI0NzItNGYxMS1iYTIxLWYyN2ZkNjgzNzI5YQ=="
 
 st.set_page_config(page_title="專業操盤戰情室", layout="wide")
 
