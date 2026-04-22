@@ -5,16 +5,16 @@ import yfinance as yf
 import time
 import random
 
-st.set_page_config(page_title="Alpha-Trader v22 INSTITUTIONAL EXTENDED", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v23 FLOW FIXED", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# STATE (全部保留 + 擴充)
+# STATE (完整保留)
 # =========================
-for k in ["last_book", "alerts", "trades", "signals", "flow_state", "trend"]:
+for k in ["last_book", "alerts", "trades", "signals"]:
     if k not in st.session_state:
-        st.session_state[k] = [] if k in ["alerts","trades","signals"] else None if k=="last_book" else {}
+        st.session_state[k] = [] if k != "last_book" else None
 
 # =========================
 # FORMAT
@@ -26,7 +26,7 @@ def f2(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL MARKET (不動)
+# 🌍 GLOBAL (不動)
 # =========================
 @st.cache_data(ttl=5)
 def fetch_global():
@@ -49,7 +49,7 @@ def fetch_global():
     return out
 
 # =========================
-# STOCK FETCH (不動)
+# STOCK
 # =========================
 def fetch_stock(symbol):
     try:
@@ -77,7 +77,7 @@ def fetch_stock(symbol):
     },"SIM"
 
 # =========================
-# BOOK VIEW (不動)
+# BOOK
 # =========================
 def book(bids,asks):
     bids = bids + [{} for _ in range(5-len(bids))]
@@ -91,9 +91,9 @@ def book(bids,asks):
     })
 
 # =========================
-# 📈 DELTA (保留)
+# DELTA
 # =========================
-def delta(curr, prev):
+def delta(curr,prev):
     if not prev:
         return pd.DataFrame()
 
@@ -112,60 +112,54 @@ def delta(curr, prev):
     return pd.DataFrame(rows,columns=["買價","買Δ","賣價","賣Δ"])
 
 # =========================
-# 🧠 INSTITUTIONAL LAYER (新增核心)
+# FLOW ENGINE（保留）
 # =========================
-def institutional(curr, prev):
+def flow(curr,prev):
     sig=[]
-
     if not prev:
         return sig
 
     for i in range(2):
-
         cb=curr["bids"][i]
         pb=prev["bids"][i]
-
         ca=curr["asks"][i]
         pa=prev["asks"][i]
 
-        # 🧲 吸籌
-        if cb["size"] > pb["size"]*2:
-            sig.append("🟢 主力持續吸籌")
+        if cb["size"]>pb["size"]*1.5:
+            sig.append("🟢 買單加壓")
 
-        # 🔴 壓盤
-        if ca["size"] > pa["size"]*2:
-            sig.append("🔴 主力壓盤加重")
+        if ca["size"]>pa["size"]*1.5:
+            sig.append("🔴 賣單加壓")
 
-        # ⚡ 假流動性
-        if cb["size"] < pb["size"]*0.4:
-            sig.append("⚠️ 買盤瞬間消失（假跌破）")
+        if cb["size"]<pb["size"]*0.5:
+            sig.append("⚪ 買單抽離")
 
-        if ca["size"] < pa["size"]*0.4:
-            sig.append("⚠️ 賣盤瞬間撤單（假突破）")
-
-    # =========================
-    # ⚡ 成交 vs 掛單壓力
-    # =========================
-    bid1=curr["bids"][0]["size"]
-    ask1=curr["asks"][0]["size"]
-
-    if bid1 > ask1*2:
-        sig.append("🚀 買方攻擊性主導")
-
-    if ask1 > bid1*2:
-        sig.append("📉 賣方壓制盤面")
+        if ca["size"]<pa["size"]*0.5:
+            sig.append("⚪ 賣單撤單")
 
     return sig
 
 # =========================
+# 🧠 TRADE TAPE（修復核心缺失）
+# =========================
+def trade_feed(snap):
+    lp = snap["lastPrice"]
+    lv = snap["lastSize"]
+
+    st.session_state.trades.insert(
+        0,
+        f"{lp:.2f} | {lv}張"
+    )
+
+# =========================
 # UI
 # =========================
-st.title("🏛️ Alpha-Trader v22 INSTITUTIONAL FLOW EXTENSION")
+st.title("🏛️ Alpha-Trader v23 FIXED FLOW + TRADE TAPE")
 
 symbol = st.text_input("股票代碼","2330")
 
 # =========================
-# 🌍 GLOBAL TOP
+# GLOBAL
 # =========================
 g=fetch_global()
 c=st.columns(4)
@@ -192,7 +186,12 @@ lp=snap["lastPrice"]
 lv=snap["lastSize"]
 
 # =========================
-# LAYOUT (不重構，只擴充)
+# SAVE TRADE FEED（補回即時成交）
+# =========================
+trade_feed(snap)
+
+# =========================
+# LAYOUT
 # =========================
 left,right=st.columns([1,2])
 
@@ -209,33 +208,39 @@ with right:
         st.dataframe(delta(snap,st.session_state.last_book),use_container_width=True)
 
     with r2:
-        st.subheader("🧠 機構監控層")
+        st.subheader("🧠 機構監控層（15筆）")
 
-        inst=institutional(snap,st.session_state.last_book)
+        inst = flow(snap, st.session_state.last_book)
 
         for s in inst:
             st.session_state.alerts.insert(0,s)
 
-        st.code("\n".join(st.session_state.alerts[:25]) or "無")
+        st.code("\n".join(st.session_state.alerts[:15]) or "無")
+
+# =========================
+# 📡 TRADE TAPE（修復）
+# =========================
+st.divider()
+st.subheader("📡 即時交易明細")
+
+st.code("\n".join(st.session_state.trades[:50]) or "無")
 
 # =========================
 # METRICS
 # =========================
-st.divider()
+c1,c2,c3=st.columns(3)
 
-m1,m2,m3=st.columns(3)
-
-with m1:
+with c1:
     st.metric("成交價",f2(lp))
 
-with m2:
+with c2:
     st.metric("成交量",lv)
 
-with m3:
+with c3:
     st.metric("模式",mode)
 
 # =========================
-# SAVE STATE
+# STATE
 # =========================
 st.session_state.last_book=snap
 
