@@ -6,16 +6,16 @@ import time
 import random
 import datetime
 
-st.set_page_config(page_title="Alpha-Trader v19 ORDER FLOW", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v20 INSTITUTIONAL FLOW", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# STATE
+# STATE (完全保留 + 擴充)
 # =========================
-for k in ["last_book", "alerts", "trades", "signals"]:
+for k in ["last_book", "alerts", "trades", "signals", "flow_state"]:
     if k not in st.session_state:
-        st.session_state[k] = [] if k != "last_book" else None
+        st.session_state[k] = {} if k == "flow_state" else [] if k != "last_book" else None
 
 # =========================
 # FORMAT
@@ -27,7 +27,7 @@ def f2(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL
+# 🌍 GLOBAL MARKET (保留)
 # =========================
 @st.cache_data(ttl=5)
 def fetch_global():
@@ -50,7 +50,7 @@ def fetch_global():
     return out
 
 # =========================
-# STOCK
+# STOCK ENGINE (保留)
 # =========================
 def fetch_stock(symbol):
     try:
@@ -71,14 +71,14 @@ def fetch_stock(symbol):
     p = float(df["Close"].iloc[-1])
 
     return {
-        "bids": [{"price": p-i*0.5, "size": random.randint(10,80)} for i in range(5)],
-        "asks": [{"price": p+i*0.5, "size": random.randint(10,80)} for i in range(5)],
+        "bids": [{"price": p-i*0.5, "size": random.randint(10,120)} for i in range(5)],
+        "asks": [{"price": p+i*0.5, "size": random.randint(10,120)} for i in range(5)],
         "lastPrice": p,
-        "lastSize": random.randint(1,50)
+        "lastSize": random.randint(1,80)
     }, "SIM"
 
 # =========================
-# BOOK SAFE
+# BOOK (保留)
 # =========================
 def safe_book(bids, asks):
     bids = bids + [{} for _ in range(5-len(bids))]
@@ -92,14 +92,14 @@ def safe_book(bids, asks):
     })
 
 # =========================
-# 🧠 DELTA ENGINE (核心補上)
+# 📈 DELTA (保留 + 強化)
 # =========================
 def delta(curr, prev):
     if not prev:
-        return None
+        return pd.DataFrame()
 
     rows = []
-    for i in range(2):  # 交戰區
+    for i in range(2):
         cb = curr["bids"][i]
         pb = prev["bids"][i]
 
@@ -114,42 +114,69 @@ def delta(curr, prev):
     return pd.DataFrame(rows, columns=["買價","買量Δ","賣價","賣量Δ"])
 
 # =========================
-# 🧠 ORDER FLOW (升級)
+# 🧠 INSTITUTIONAL FLOW ENGINE（新增核心）
 # =========================
-def flow(curr, prev):
-    alerts = []
+def institutional_flow(curr, prev):
+    signals = []
+
     if not prev:
-        return alerts
+        return signals
 
-    for i in range(2):
-        cb = curr["bids"][i]
-        pb = prev["bids"][i]
+    try:
+        for i in range(2):
 
-        ca = curr["asks"][i]
-        pa = prev["asks"][i]
+            cb = curr["bids"][i]
+            pb = prev["bids"][i]
 
-        # 加單
-        if cb["size"] > pb["size"]*1.5:
-            alerts.append(f"🟢 買一加單 {cb['price']:.2f}")
+            ca = curr["asks"][i]
+            pa = prev["asks"][i]
 
-        if ca["size"] > pa["size"]*1.5:
-            alerts.append(f"🔴 賣一壓單 {ca['price']:.2f}")
+            # =========================
+            # 🧲 1. 主力吸籌
+            # =========================
+            if cb["size"] > pb["size"] * 2:
+                signals.append("🟢 主力吸籌（買單堆積）")
 
-        # 抽單
-        if cb["size"] < pb["size"]*0.5:
-            alerts.append(f"⚪ 買一抽單 {cb['price']:.2f}")
+            # =========================
+            # 🔴 出貨壓盤
+            # =========================
+            if ca["size"] > pa["size"] * 2:
+                signals.append("🔴 主力壓盤（賣單堆積）")
 
-        if ca["size"] < pa["size"]*0.5:
-            alerts.append(f"⚪ 賣一撤單 {ca['price']:.2f}")
+            # =========================
+            # ⚡ 3. 快速抽單（假盤）
+            # =========================
+            if cb["size"] < pb["size"] * 0.4:
+                signals.append("⚠️ 買單抽離（假跌破）")
 
-    return alerts
+            if ca["size"] < pa["size"] * 0.4:
+                signals.append("⚠️ 賣單撤單（假突破）")
+
+        # =========================
+        # ⚡ 4. 成交攻擊力
+        # =========================
+        spread = curr["lastPrice"]
+
+        bid1 = curr["bids"][0]["size"]
+        ask1 = curr["asks"][0]["size"]
+
+        if bid1 > ask1 * 1.8:
+            signals.append("🚀 買方攻擊力強")
+
+        if ask1 > bid1 * 1.8:
+            signals.append("📉 賣方攻擊力強")
+
+    except:
+        pass
+
+    return signals
 
 # =========================
 # UI
 # =========================
-st.title("🏛️ Alpha Trader v19 ORDER FLOW ENGINE")
+st.title("🏛️ Alpha-Trader v20 INSTITUTIONAL ORDER FLOW")
 
-symbol = st.text_input("股票", "2330")
+symbol = st.text_input("股票代碼", "2330")
 
 # =========================
 # GLOBAL
@@ -178,40 +205,48 @@ asks = snap["asks"]
 lp = snap["lastPrice"]
 lv = snap["lastSize"]
 
-st.subheader("📊 五檔")
+# =========================
+# BOOK
+# =========================
+st.subheader("📊 五檔（完整盤口）")
 st.dataframe(safe_book(bids,asks), use_container_width=True)
 
 # =========================
-# DELTA TABLE（補回核心）
+# DELTA
 # =========================
-st.subheader("📈 掛單變化 (Delta)")
-
+st.subheader("📈 掛單變化（Delta）")
 st.dataframe(delta(snap, st.session_state.last_book), use_container_width=True)
 
 # =========================
-# FLOW ENGINE
+# INSTITUTIONAL FLOW
 # =========================
-alerts = flow(snap, st.session_state.last_book)
+flow = institutional_flow(snap, st.session_state.last_book)
 
-for a in alerts:
-    st.session_state.alerts.insert(0,a)
+for f in flow:
+    st.session_state.alerts.insert(0, f)
 
 st.session_state.last_book = snap
 
 # =========================
-# DISPLAY
+# METRICS
 # =========================
 c1,c2,c3 = st.columns(3)
 
 with c1:
     st.metric("成交價", f2(lp))
+
 with c2:
     st.metric("成交量", lv)
+
 with c3:
     st.metric("模式", mode)
 
-st.subheader("🚨 即時盤口訊號")
-st.code("\n".join(st.session_state.alerts[:30]) or "無")
+# =========================
+# SIGNAL BOARD
+# =========================
+st.subheader("🚨 機構級籌碼訊號")
+
+st.code("\n".join(st.session_state.alerts[:40]) or "無訊號")
 
 # =========================
 # LOOP
