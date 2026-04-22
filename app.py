@@ -3,16 +3,13 @@ import pandas as pd
 import datetime
 import requests
 import yfinance as yf
-from streamlit_autorefresh import st_autorefresh
+import time
 
 # ==============================
 # 1. 基礎設定
 # ==============================
-st.set_page_config(page_title="Alpha-Trader v15", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v15 Phase 2", layout="wide")
 
-st_autorefresh(interval=2000, key="live_refresh")
-
-# API KEY（請放到 secrets）
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # ==============================
@@ -24,34 +21,33 @@ if "alerts" not in st.session_state:
     st.session_state.alerts = []
 if "trades" not in st.session_state:
     st.session_state.trades = []
+if "price_volume" not in st.session_state:
+    st.session_state.price_volume = {}
 
 # ==============================
-# 3. 市場資料（全球指數）
+# 3. 全球市場
 # ==============================
 @st.cache_data(ttl=3)
-def fetch_global_markets():
+def fetch_global():
     symbols = {
-        "日經225": "^N225",
+        "日經": "^N225",
         "恆生": "^HSI",
         "韓國": "^KS11",
         "加權": "^TWII"
     }
-
     data = {}
-    for name, sym in symbols.items():
+    for k, v in symbols.items():
         try:
-            df = yf.Ticker(sym).history(period="1d")
+            df = yf.Ticker(v).history(period="1d")
             if not df.empty:
                 p = df['Close'].iloc[-1]
                 prev = df['Close'].iloc[-2] if len(df) > 1 else p
                 pct = (p - prev) / prev * 100
-                data[name] = (p, pct)
+                data[k] = (p, pct)
         except:
-            data[name] = (None, None)
+            data[k] = (None, None)
     return data
 
-
-@st.cache_data(ttl=2)
 def fetch_tx():
     try:
         url = f"https://api.fugle.tw/marketdata/v1.0/futures/snapshot/quotes/TXFR"
@@ -62,11 +58,10 @@ def fetch_tx():
     except:
         return None, None
 
-
 # ==============================
-# 4. 個股資料
+# 4. 個股
 # ==============================
-def fetch_stock_snapshot(symbol):
+def fetch_stock(symbol):
     try:
         url = f"https://api.fugle.tw/marketdata/v1.0/stock/snapshot/quotes/{symbol}"
         r = requests.get(url, headers={"X-API-KEY": API_KEY}, timeout=2)
@@ -76,66 +71,58 @@ def fetch_stock_snapshot(symbol):
         pass
     return None
 
-
 # ==============================
-# 5. 主力判斷引擎
+# 5. 主力邏輯
 # ==============================
-def analyze_order_behavior(curr_b, curr_a, last_book, threshold):
-    signals = []
+def calc_market_force(curr_b, curr_a):
+    b = sum(curr_b.values())
+    a = sum(curr_a.values())
+    ratio = b / (a + 1)
+    return b, a, ratio
 
-    if not last_book:
-        return signals
+def detect_breakout(lp, history_prices):
+    if len(history_prices) < 5:
+        return None
+    recent_high = max(history_prices[-5:])
+    recent_low = min(history_prices[-5:])
+    
+    if lp > recent_high:
+        return "🚀 突破"
+    elif lp < recent_low:
+        return "💥 跌破"
+    return None
 
-    for p, s in curr_a.items():
-        prev = last_book['a'].get(p, 0)
-        diff = s - prev
-        if abs(diff) >= threshold:
-            if diff > 0:
-                signals.append(f"🔴 壓單增加 {p} +{diff}")
-            else:
-                signals.append(f"⚪ 壓單撤單 {p} {diff}")
+def calc_cost_zone(price_volume):
+    if not price_volume:
+        return None
+    total_vol = sum(price_volume.values())
+    weighted = sum(float(p)*v for p, v in price_volume.items())
+    return weighted / total_vol if total_vol > 0 else None
 
-    for p, s in curr_b.items():
-        prev = last_book['b'].get(p, 0)
-        diff = s - prev
-        if abs(diff) >= threshold:
-            if diff > 0:
-                signals.append(f"🟢 支撐增加 {p} +{diff}")
-            else:
-                signals.append(f"⚪ 支撐撤單 {p} {diff}")
-
-    return signals
-
-
-def detect_trap(lp, lv, best_bid, best_ask, curr_b, curr_a):
-    signals = []
-
-    total_b = sum(curr_b.values())
-    total_a = sum(curr_a.values())
-
-    if lp >= best_ask and lv > 20 and total_a > total_b:
-        signals.append("🚀 假壓盤（吸貨）")
-
-    if lp <= best_bid and lv > 20 and total_b > total_a:
-        signals.append("💀 假支撐（出貨）")
-
-    return signals
-
+def market_filter(tx_pct, twii_pct):
+    if tx_pct and twii_pct:
+        if tx_pct > 0 and twii_pct > 0:
+            return "多方市場"
+        elif tx_pct < 0 and twii_pct < 0:
+            return "空方市場"
+    return "震盪"
 
 # ==============================
 # 6. UI
 # ==============================
-st.title("🏛️ Alpha-Trader v15 Phase 1")
+st.title("🏛️ Alpha-Trader v15 Phase 2")
 
-symbol = st.text_input("股票代碼", value="2330")
+symbol = st.text_input("股票代碼", "2330")
 qty_limit = st.number_input("大單門檻", value=50)
 
-# ===== 全球市場 =====
-st.subheader("🌍 全球市場")
-
+# ===== 市場 =====
+st.subheader("🌍 市場狀態")
 cols = st.columns(5)
-global_data = fetch_global_markets()
+
+global_data = fetch_global()
 tx_p, tx_pct = fetch_tx()
+
+twii_pct = global_data.get("加權", (None, None))[1]
 
 for i, (name, val) in enumerate(global_data.items()):
     p, pct = val
@@ -144,56 +131,64 @@ for i, (name, val) in enumerate(global_data.items()):
 
 cols[4].metric("台指期", f"{tx_p}", f"{tx_pct}%")
 
+market_state = market_filter(tx_pct, twii_pct)
+st.info(f"市場判斷：{market_state}")
+
 st.divider()
 
-# ===== 個股監控 =====
-st.subheader("📊 個股監控")
-
-snap = fetch_stock_snapshot(symbol)
+# ===== 個股 =====
+snap = fetch_stock(symbol)
 
 if snap:
     bids = snap.get("bids", [])
     asks = snap.get("asks", [])
 
-    df_b = pd.DataFrame(bids).rename(columns={"price": "買價", "size": "買量"})
-    df_a = pd.DataFrame(asks).rename(columns={"price": "賣價", "size": "賣量"})
-
-    st.dataframe(pd.concat([df_b, df_a], axis=1), use_container_width=True)
-
     curr_b = {x['price']: x['size'] for x in bids}
     curr_a = {x['price']: x['size'] for x in asks}
 
-    # === 主力行為 ===
-    signals = analyze_order_behavior(curr_b, curr_a, st.session_state.last_book, qty_limit)
+    df = pd.DataFrame(bids)
+    df2 = pd.DataFrame(asks)
+    st.dataframe(pd.concat([df, df2], axis=1), use_container_width=True)
 
-    for s in signals:
-        st.session_state.alerts.insert(0, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {s}")
+    # === 多空力道 ===
+    b, a, ratio = calc_market_force(curr_b, curr_a)
+    st.metric("多空比", f"{ratio:.2f}", f"B:{b} / S:{a}")
 
     # === 成交 ===
     lp = snap.get("lastPrice")
     lv = snap.get("lastSize")
 
     if lp:
-        st.session_state.trades.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {lp} | {lv}張")
+        st.session_state.trades.insert(0, lp)
 
-        best_bid = max(curr_b.keys()) if curr_b else 0
-        best_ask = min(curr_a.keys()) if curr_a else 0
+        # 成本計算
+        ps = str(lp)
+        st.session_state.price_volume[ps] = st.session_state.price_volume.get(ps, 0) + lv
 
-        trap = detect_trap(lp, lv, best_bid, best_ask, curr_b, curr_a)
+        cost = calc_cost_zone(st.session_state.price_volume)
 
-        for s in trap:
-            st.session_state.alerts.insert(0, f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {s}")
+        # 突破
+        history = st.session_state.trades[:20]
+        signal = detect_breakout(lp, history)
 
-    # 更新 book
-    st.session_state.last_book = {'b': curr_b, 'a': curr_a}
+        if signal:
+            st.session_state.alerts.insert(0, signal)
 
-# ===== 顯示 =====
-col1, col2 = st.columns(2)
+        st.metric("主力成本", f"{cost:.2f}" if cost else "計算中")
 
-with col1:
-    st.subheader("🚨 主力訊號")
-    st.code("\n".join(st.session_state.alerts[:20]))
+    # 顯示
+    col1, col2 = st.columns(2)
 
-with col2:
-    st.subheader("📜 成交明細")
-    st.code("\n".join(st.session_state.trades[:30]))
+    with col1:
+        st.subheader("🚨 訊號")
+        st.code("\n".join(st.session_state.alerts[:20]))
+
+    with col2:
+        st.subheader("📜 成交")
+        st.code("\n".join([str(x) for x in st.session_state.trades[:20]]))
+
+# ==============================
+# 7. 自動刷新
+# ==============================
+time.sleep(2)
+st.rerun()
