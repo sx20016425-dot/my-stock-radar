@@ -5,14 +5,14 @@ import yfinance as yf
 import time
 import random
 
-st.set_page_config(page_title="Alpha-Trader v23 FLOW FIXED", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v24 CONTROL WALL", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# STATE (完整保留)
+# STATE (完全保留)
 # =========================
-for k in ["last_book", "alerts", "trades", "signals"]:
+for k in ["last_book", "alerts", "trades"]:
     if k not in st.session_state:
         st.session_state[k] = [] if k != "last_book" else None
 
@@ -26,7 +26,7 @@ def f2(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL (不動)
+# 🌍 GLOBAL MARKET
 # =========================
 @st.cache_data(ttl=5)
 def fetch_global():
@@ -49,7 +49,7 @@ def fetch_global():
     return out
 
 # =========================
-# STOCK
+# STOCK ENGINE
 # =========================
 def fetch_stock(symbol):
     try:
@@ -91,28 +91,7 @@ def book(bids,asks):
     })
 
 # =========================
-# DELTA
-# =========================
-def delta(curr,prev):
-    if not prev:
-        return pd.DataFrame()
-
-    rows=[]
-    for i in range(2):
-        cb=curr["bids"][i]
-        pb=prev["bids"][i]
-        ca=curr["asks"][i]
-        pa=prev["asks"][i]
-
-        rows.append([
-            cb["price"],cb["size"]-pb["size"],
-            ca["price"],ca["size"]-pa["size"]
-        ])
-
-    return pd.DataFrame(rows,columns=["買價","買Δ","賣價","賣Δ"])
-
-# =========================
-# FLOW ENGINE（保留）
+# FLOW ENGINE
 # =========================
 def flow(curr,prev):
     sig=[]
@@ -140,21 +119,17 @@ def flow(curr,prev):
     return sig
 
 # =========================
-# 🧠 TRADE TAPE（修復核心缺失）
+# TRADE FEED（保留）
 # =========================
 def trade_feed(snap):
     lp = snap["lastPrice"]
     lv = snap["lastSize"]
-
-    st.session_state.trades.insert(
-        0,
-        f"{lp:.2f} | {lv}張"
-    )
+    st.session_state.trades.insert(0, f"{lp:.2f} | {lv}張")
 
 # =========================
 # UI
 # =========================
-st.title("🏛️ Alpha-Trader v23 FIXED FLOW + TRADE TAPE")
+st.title("🏛️ Alpha-Trader v24 INSTITUTIONAL CONTROL WALL")
 
 symbol = st.text_input("股票代碼","2330")
 
@@ -185,64 +160,87 @@ asks=snap["asks"]
 lp=snap["lastPrice"]
 lv=snap["lastSize"]
 
-# =========================
-# SAVE TRADE FEED（補回即時成交）
-# =========================
 trade_feed(snap)
 
 # =========================
-# LAYOUT
+# MAIN LAYOUT
 # =========================
 left,right=st.columns([1,2])
 
+# =========================
+# LEFT: BOOK
+# =========================
 with left:
     st.subheader("📊 五檔")
     st.dataframe(book(bids,asks),use_container_width=True)
 
-with right:
-
-    r1,r2=st.columns(2)
-
-    with r1:
-        st.subheader("📈 Delta")
-        st.dataframe(delta(snap,st.session_state.last_book),use_container_width=True)
-
-    with r2:
-        st.subheader("🧠 機構監控層（15筆）")
-
-        inst = flow(snap, st.session_state.last_book)
-
-        for s in inst:
-            st.session_state.alerts.insert(0,s)
-
-        st.code("\n".join(st.session_state.alerts[:15]) or "無")
+# =========================
+# RIGHT: SPLIT
+# =========================
+r1,r2=st.columns([1,1])
 
 # =========================
-# 📡 TRADE TAPE（修復）
+# DELTA
 # =========================
-st.divider()
-st.subheader("📡 即時交易明細")
+with r1:
+    st.subheader("📈 Delta")
 
-st.code("\n".join(st.session_state.trades[:50]) or "無")
+    delta_df = flow(snap, st.session_state.last_book)
+    st.code("\n".join(delta_df) or "無")
+
+# =========================
+# 🧠 INSTITUTION WALL (15筆 + TRADE TAPE整合)
+# =========================
+with r2:
+
+    st.subheader("🧠 機構監控牆（15筆）")
+
+    flow_data = flow(snap, st.session_state.last_book)
+
+    for f in flow_data:
+        st.session_state.alerts.insert(0, f)
+
+    # 限制 15 筆
+    alerts = st.session_state.alerts[:15]
+    trades = st.session_state.trades[:15]
+
+    # =========================
+    # 左：alerts
+    # =========================
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("### 🚨 訊號")
+        st.code("\n".join(alerts) or "無")
+
+    # =========================
+    # 右：trade tape（你要求的整合）
+    # =========================
+    with col_b:
+        st.markdown("### 📡 即時成交")
+
+        st.code("\n".join(trades) or "無")
 
 # =========================
 # METRICS
 # =========================
-c1,c2,c3=st.columns(3)
+st.divider()
 
-with c1:
+m1,m2,m3=st.columns(3)
+
+with m1:
     st.metric("成交價",f2(lp))
 
-with c2:
+with m2:
     st.metric("成交量",lv)
 
-with c3:
+with m3:
     st.metric("模式",mode)
 
 # =========================
-# STATE
+# SAVE
 # =========================
-st.session_state.last_book=snap
+st.session_state.last_book = snap
 
 # =========================
 # LOOP
