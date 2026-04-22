@@ -4,34 +4,36 @@ import requests
 import yfinance as yf
 import time
 import random
+import datetime
 
-st.set_page_config(page_title="Alpha-Trader v17 Stable Core", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v18 Execution Core", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
-# ======================
+# =========================
 # INIT
-# ======================
+# =========================
 for k, v in {
     "last_book": None,
     "alerts": [],
     "trades": [],
+    "signals": [],
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ======================
+# =========================
 # SAFE FORMAT
-# ======================
+# =========================
 def f2(x):
     try:
         return "--" if x is None else f"{float(x):.2f}"
     except:
         return "--"
 
-# ======================
-# SAFE DATA LAYER
-# ======================
+# =========================
+# DATA LAYER
+# =========================
 def fetch_stock(symbol):
     try:
         url = f"https://api.fugle.tw/marketdata/v1.0/stock/snapshot/quotes/{symbol}"
@@ -44,7 +46,6 @@ def fetch_stock(symbol):
     except:
         pass
 
-    # fallback
     try:
         df = yf.Ticker(f"{symbol}.TW").history(period="1d")
         if df is None or df.empty:
@@ -61,19 +62,17 @@ def fetch_stock(symbol):
             "lastPrice": p,
             "lastSize": random.randint(1,50)
         }, "SIM"
-
     except:
         return None, "NONE"
 
-# ======================
-# SAFE BOOK (核心修復點)
-# ======================
+# =========================
+# SAFE BOOK
+# =========================
 def safe_book(bids, asks):
     try:
-        max_len = max(len(bids), len(asks), 1)
-
-        bids = bids + [{} for _ in range(max_len - len(bids))]
-        asks = asks + [{} for _ in range(max_len - len(asks))]
+        n = max(len(bids), len(asks), 1)
+        bids = bids + [{} for _ in range(n - len(bids))]
+        asks = asks + [{} for _ in range(n - len(asks))]
 
         return pd.DataFrame({
             "買價": [x.get("price") for x in bids],
@@ -82,47 +81,74 @@ def safe_book(bids, asks):
             "賣量": [x.get("size") for x in asks],
         })
     except:
-        return pd.DataFrame(columns=["買價","買量","賣價","賣量"])
+        return pd.DataFrame()
 
-# ======================
-# SIGNAL ENGINE
-# ======================
-def detect_flow(curr, prev):
+# =========================
+# MICROSTRUCTURE ENGINE
+# =========================
+def imbalance(bids, asks):
+    try:
+        b = sum(bids.values())
+        a = sum(asks.values())
+        return (b - a) / (b + a + 1)
+    except:
+        return 0
+
+def liquidity_shock(curr, prev):
     if not prev:
         return []
 
-    signals = []
-
+    out = []
     for p, s in curr.items():
         old = prev.get(p, 0)
         diff = s - old
 
-        if diff > 30:
-            signals.append(f"🟢 掛單增加 {f2(p)} +{diff}")
-        elif diff < -30:
-            signals.append(f"⚠️ 抽單 {f2(p)} {diff}")
+        if diff > 40:
+            out.append(("STACK", p, diff))
+        elif diff < -40:
+            out.append(("PULL", p, diff))
+    return out
+
+# =========================
+# TRADING MODEL (v18 CORE)
+# =========================
+def generate_trade_signal(score, lp, lv, imbalance_score):
+    signals = []
+
+    # momentum entry
+    if score > 65 and imbalance_score > 0.2:
+        signals.append(("LONG_ENTRY", "多方進場"))
+
+    if score < 35 and imbalance_score < -0.2:
+        signals.append(("SHORT_ENTRY", "空方進場"))
+
+    # breakout / fakeout
+    if lv and lv > 40 and score > 60:
+        signals.append(("BREAKOUT", "放量突破"))
+
+    if lv and lv > 40 and score < 40:
+        signals.append(("FAKEOUT", "假突破警示"))
 
     return signals
 
-def aggression(bids, asks, lp):
-    try:
-        b = sum(bids.values())
-        a = sum(asks.values())
-        score = 50 + (b - a) / (b + a + 1) * 50
-        return max(0, min(100, score))
-    except:
-        return 50
+def position_logic(signal, lp):
+    if signal == "LONG_ENTRY":
+        return f"🟢 做多進場 @ {f2(lp)}"
+    if signal == "SHORT_ENTRY":
+        return f"🔴 做空進場 @ {f2(lp)}"
+    if signal == "BREAKOUT":
+        return f"🚀 突破追價 @ {f2(lp)}"
+    if signal == "FAKEOUT":
+        return f"⚠️ 假突破撤退 @ {f2(lp)}"
+    return None
 
-# ======================
+# =========================
 # UI
-# ======================
-st.title("🏛️ Alpha-Trader v17 Stable Architecture")
+# =========================
+st.title("🏛️ Alpha-Trader v18 Trading Decision System")
 
 symbol = st.text_input("股票代碼", "2330")
 
-# ======================
-# DATA FETCH
-# ======================
 snap, mode = fetch_stock(symbol)
 
 if not snap:
@@ -135,61 +161,89 @@ asks = snap["asks"]
 curr_b = {x.get("price"): x.get("size") for x in bids if x}
 curr_a = {x.get("price"): x.get("size") for x in asks if x}
 
-# ======================
-# SAFE UI BLOCKS（重點）
-# ======================
+# =========================
+# PRICE + FLOW
+# =========================
+lp = snap.get("lastPrice")
+lv = snap.get("lastSize")
 
-try:
-    st.subheader("📊 五檔")
-    book_df = safe_book(bids, asks)
-    st.dataframe(book_df, use_container_width=True)
-except:
-    st.warning("五檔資料異常")
+imb = imbalance(curr_b, curr_a)
 
-try:
-    st.subheader("📈 主力強度")
-    lp = snap.get("lastPrice")
-    score = aggression(curr_b, curr_a, lp)
-    st.metric("多空分數", f"{score:.1f}/100")
-except:
-    st.warning("分析失敗")
+score = 50 + imb * 100
 
-try:
-    lp = snap.get("lastPrice")
-    lv = snap.get("lastSize")
+# =========================
+# SIGNAL ENGINE
+# =========================
+signals = generate_trade_signal(score, lp, lv, imb)
 
-    if lp:
-        st.session_state.trades.insert(0, f"{f2(lp)} | {lv}")
+for s in signals:
+    st.session_state.signals.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {s[1]}")
 
-except:
-    pass
+    trade = position_logic(s[0], lp)
+    if trade:
+        st.session_state.trades.insert(0, trade)
 
-# ======================
-# SAFE OUTPUT
-# ======================
-col1, col2 = st.columns(2)
+# =========================
+# LIQUIDITY SHOCK
+# =========================
+shock = liquidity_shock(
+    curr_a,
+    st.session_state.last_book["a"] if st.session_state.last_book else {}
+)
+
+for s in shock:
+    typ, p, d = s
+    if typ == "PULL":
+        st.session_state.alerts.insert(0, f"⚠️ 抽單 {f2(p)} {d}")
+    else:
+        st.session_state.alerts.insert(0, f"🟢 掛單 {f2(p)} +{d}")
+
+# =========================
+# UPDATE BOOK
+# =========================
+st.session_state.last_book = {"b": curr_b, "a": curr_a}
+
+# =========================
+# DASHBOARD
+# =========================
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    st.metric("多空強度", f"{score:.1f}")
+
+with c2:
+    st.metric("買賣失衡", f"{imb:.3f}")
+
+with c3:
+    st.metric("成交價", f2(lp))
+
+# =========================
+# ORDER BOOK
+# =========================
+st.subheader("📊 五檔")
+st.dataframe(safe_book(bids, asks), use_container_width=True)
+
+# =========================
+# SIGNALS
+# =========================
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.subheader("🚨 訊號")
-    try:
-        st.code("\n".join([str(x) for x in st.session_state.alerts[:25]]) or "無")
-    except:
-        st.code("無")
+    st.subheader("🚨 主力訊號")
+    st.code("\n".join([str(x) for x in st.session_state.signals[:20]]) or "無")
 
 with col2:
-    st.subheader("📜 成交流")
-    try:
-        st.code("\n".join([str(x) for x in st.session_state.trades[:25]]) or "無")
-    except:
-        st.code("無")
+    st.subheader("📜 交易決策")
+    st.code("\n".join([str(x) for x in st.session_state.trades[:20]]) or "無")
 
-# ======================
-# BOOK UPDATE
-# ======================
-st.session_state.last_book = {
-    "b": curr_b,
-    "a": curr_a
-}
+with col3:
+    st.subheader("⚠️ 流動性警報")
+    st.code("\n".join([str(x) for x in st.session_state.alerts[:20]]) or "無")
+
+# =========================
+# LIVE TICK LOG
+# =========================
+st.session_state.trades.insert(0, f"{f2(lp)} | {lv}")
 
 time.sleep(2)
 st.rerun()
