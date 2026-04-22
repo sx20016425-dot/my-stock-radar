@@ -6,22 +6,23 @@ import time
 import random
 
 # =========================
-# 🏛️ BASIC CONFIG
+# 🏛️ CONFIG
 # =========================
-st.set_page_config(page_title="Alpha Trader vFinal Core", layout="wide")
+st.set_page_config(page_title="Alpha Trader FINAL ENGINE", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
 # 🧠 STATE INIT
 # =========================
-if "book" not in st.session_state:
-    st.session_state.book = None
+if "prev_book" not in st.session_state:
+    st.session_state.prev_book = None
+
 if "alerts" not in st.session_state:
     st.session_state.alerts = []
 
 # =========================
-# SAFE FORMAT FUNCTION
+# 🧾 SAFE FORMAT
 # =========================
 def safe(x):
     try:
@@ -32,42 +33,43 @@ def safe(x):
 # =========================
 # 🌍 GLOBAL MARKET MODULE
 # =========================
-def get_global():
-    symbols = {
+def global_market():
+    idx = {
         "日經": "^N225",
         "恆生": "^HSI",
         "韓國": "^KS11",
         "加權": "^TWII",
+        "台指期": "^TWII",
         "S&P500": "^GSPC",
         "NASDAQ": "^IXIC"
     }
 
-    result = {}
+    out = {}
 
-    for k, v in symbols.items():
+    for k, v in idx.items():
         try:
             df = yf.Ticker(v).history(period="2d")
 
             if df is None or df.empty:
-                result[k] = (None, None)
+                out[k] = (None, None)
                 continue
 
-            now = float(df["Close"].iloc[-1])
+            p = float(df["Close"].iloc[-1])
             prev = float(df["Close"].iloc[-2])
 
-            pct = (now - prev) / prev * 100
-            result[k] = (now, pct)
+            pct = (p - prev) / prev * 100
+
+            out[k] = (p, pct)
 
         except:
-            result[k] = (None, None)
+            out[k] = (None, None)
 
-    return result
+    return out
 
 # =========================
 # 📊 STOCK DATA MODULE
 # =========================
 def get_stock(symbol):
-    # 1. Fugle
     try:
         url = f"https://api.fugle.tw/marketdata/v1.0/stock/snapshot/quotes/{symbol}"
         r = requests.get(url, headers={"X-API-KEY": API_KEY}, timeout=2)
@@ -79,34 +81,29 @@ def get_stock(symbol):
     except:
         pass
 
-    # 2. Yahoo fallback
+    # fallback SIM
     try:
         df = yf.Ticker(f"{symbol}.TW").history(period="1d")
 
         if df is None or df.empty:
             raise Exception()
 
-        price = float(df["Close"].iloc[-1])
+        p = float(df["Close"].iloc[-1])
 
         return {
-            "bids": [{"price": price-i*0.5, "size": random.randint(10,80)} for i in range(5)],
-            "asks": [{"price": price+i*0.5, "size": random.randint(10,80)} for i in range(5)],
-            "lastPrice": price,
+            "bids": [{"price": p-i*0.5, "size": random.randint(10,100)} for i in range(5)],
+            "asks": [{"price": p+i*0.5, "size": random.randint(10,100)} for i in range(5)],
+            "lastPrice": p,
             "lastSize": random.randint(1,50)
         }, "SIM"
 
     except:
-        return {
-            "bids": [],
-            "asks": [],
-            "lastPrice": None,
-            "lastSize": None
-        }, "FAIL"
+        return None, "FAIL"
 
 # =========================
 # 📊 ORDER BOOK VIEW
 # =========================
-def build_book(bids, asks):
+def book_view(bids, asks):
     n = 5
 
     bids = (bids or []) + [{} for _ in range(n - len(bids or []))]
@@ -120,7 +117,7 @@ def build_book(bids, asks):
     })
 
 # =========================
-# 🧠 ORDER FLOW ENGINE
+# 🧠 ORDER FLOW ENGINE (核心)
 # =========================
 def order_flow(curr, prev):
     alerts = []
@@ -129,24 +126,26 @@ def order_flow(curr, prev):
         return alerts
 
     try:
-        for i in range(2):
+        for i in range(2):  # 只看前兩檔（交戰區）
             cb = curr["bids"][i]
             pb = prev["bids"][i]
 
             ca = curr["asks"][i]
             pa = prev["asks"][i]
 
-            # 🟢 buy strength
+            # 🟢 買單加單
             if cb["size"] > pb["size"] * 1.5:
-                alerts.append(f"🟢 買單加壓 {cb['price']:.2f}")
+                alerts.append(f"🟢 買單加壓 {cb['price']:.2f} Δ+{cb['size']-pb['size']}")
 
+            # ⚪ 買單抽單
             if cb["size"] < pb["size"] * 0.5:
-                alerts.append(f"⚪ 買單抽離 {cb['price']:.2f}")
+                alerts.append(f"⚪ 買單抽單 {cb['price']:.2f}")
 
-            # 🔴 sell pressure
+            # 🔴 賣單加壓
             if ca["size"] > pa["size"] * 1.5:
-                alerts.append(f"🔴 賣壓加單 {ca['price']:.2f}")
+                alerts.append(f"🔴 賣壓加單 {ca['price']:.2f} Δ+{ca['size']-pa['size']}")
 
+            # ⚪ 賣單撤單
             if ca["size"] < pa["size"] * 0.5:
                 alerts.append(f"⚪ 賣壓撤單 {ca['price']:.2f}")
 
@@ -158,7 +157,7 @@ def order_flow(curr, prev):
 # =========================
 # 🏛️ UI
 # =========================
-st.title("🏛️ Alpha Trader vFinal Core Engine")
+st.title("🏛️ Alpha Trader FINAL FULL ENGINE")
 
 symbol = st.text_input("股票代碼", "2330")
 
@@ -167,19 +166,23 @@ symbol = st.text_input("股票代碼", "2330")
 # =========================
 st.subheader("🌍 全球市場")
 
-global_data = get_global()
-cols = st.columns(len(global_data))
+g = global_market()
+cols = st.columns(len(g))
 
-for i, (k, v) in enumerate(global_data.items()):
-    price, pct = v
-    cols[i].metric(k, safe(price), f"{pct:.2f}%" if pct else "--")
+for i, (k, v) in enumerate(g.items()):
+    p, pct = v
+    cols[i].metric(k, safe(p), f"{pct:.2f}%" if pct else "--")
 
 st.divider()
 
 # =========================
-# 📊 STOCK DATA
+# 📊 STOCK
 # =========================
 snap, mode = get_stock(symbol)
+
+if snap is None:
+    st.warning("無法取得資料")
+    st.stop()
 
 bids = snap["bids"]
 asks = snap["asks"]
@@ -187,41 +190,41 @@ asks = snap["asks"]
 lp = snap.get("lastPrice")
 lv = snap.get("lastSize")
 
-st.subheader("📊 五檔報價")
+st.subheader("📊 五檔掛單")
 
-st.dataframe(build_book(bids, asks), use_container_width=True)
+st.dataframe(book_view(bids, asks), use_container_width=True)
 
 # =========================
-# 📡 TRADE INFO
+# 📡 TRADE
 # =========================
-st.subheader("📡 成交資訊")
+st.subheader("📡 成交")
 
 st.metric("成交價", safe(lp))
 st.metric("成交量", lv)
-st.metric("資料模式", mode)
+st.metric("模式", mode)
 
 # =========================
 # 🧠 ORDER FLOW
 # =========================
 curr = snap
-prev = st.session_state.book
+prev = st.session_state.prev_book
 
 alerts = order_flow(curr, prev)
 
 for a in alerts:
     st.session_state.alerts.insert(0, a)
 
-st.session_state.book = curr
+st.session_state.prev_book = curr
 
 # =========================
-# 🚨 ALERT PANEL
+# 🚨 ALERTS
 # =========================
-st.subheader("🚨 主力訊號")
+st.subheader("🚨 主力監控訊號")
 
-st.code("\n".join(st.session_state.alerts[:20]) or "無訊號")
+st.code("\n".join(st.session_state.alerts[:30]) or "無訊號")
 
 # =========================
-# 🔁 LOOP
+# LOOP
 # =========================
 time.sleep(2)
 st.rerun()
