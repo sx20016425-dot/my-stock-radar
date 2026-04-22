@@ -4,97 +4,87 @@ import asyncio
 from fugle_marketdata import WebMdaClient
 import datetime
 
-# --- 1. 頁面配置 ---
-st.set_page_config(page_title="大戶盤口攻守雷達", layout="wide", initial_sidebar_state="expanded")
+# --- 1. 頁面介面配置 ---
+st.set_page_config(page_title="大戶盤口攻守雷達", layout="wide")
 
-# 自定義 CSS 讓介面更像專業看盤軟體
+# CSS 樣式優化：讓表格與數據更易讀
 st.markdown("""
     <style>
-    .reportview-container { background: #0e1117; }
-    .stMetric { background-color: #1f2937; padding: 10px; border-radius: 10px; border: 1px solid #374151; }
-    .big-font { font-size:20px !important; font-weight: bold; }
+    .stTable { font-size: 18px !important; }
+    .big-font { font-size: 24px !important; color: #ff4b4b; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 讀取密鑰 ---
+# --- 2. 密鑰讀取 (從 Streamlit Secrets) ---
 try:
     API_KEY = st.secrets["FUGLE_API_KEY"]
 except Exception:
-    st.error("❌ 找不到 API Key，請檢查 Streamlit Secrets 設定。")
+    st.error("❌ 找不到 API Key，請檢查 Streamlit Secrets 是否設定為 FUGLE_API_KEY")
     st.stop()
 
-# --- 3. 側邊欄：監控參數 ---
+# --- 3. 側邊欄設定 ---
 with st.sidebar:
-    st.title("🛡️ 監控設定")
+    st.title("⚡ 監控設定")
     target_stock = st.text_input("股票代號", value="3042")
-    large_order_limit = st.number_input("大單成交門檻 (張)", value=50)
+    large_order_limit = st.number_input("大單門檻 (張)", value=50)
     st.divider()
-    st.info("💡 建議同時觀察台指期趨勢，當台指急拉且個股賣單抽單時，通常是發動訊號。")
+    st.write("操作說明：")
+    st.write("1. 確認 GitHub 已存檔")
+    st.write("2. 點擊下方按鈕啟動連線")
 
 # --- 4. 主畫面佈局 ---
-# 頂部即時狀態
-head_col1, head_col2, head_col3 = st.columns(3)
-with head_col1:
-    index_placeholder = st.empty() # 台指期顯示區
-with head_col2:
-    stock_price_placeholder = st.empty() # 個股現價顯示區
-with head_col3:
-    st.metric("監控狀態", "運作中", delta="Real-time")
-
-st.divider()
+st.title(f"📈 {target_stock} 即時盤口監控")
 
 col_left, col_right = st.columns([1, 1])
 
 with col_left:
-    st.subheader("📊 五檔掛單 (偵測抽單)")
-    orderbook_placeholder = st.empty()
-    alert_placeholder = st.container()
+    st.subheader("🛡️ 五檔即時掛單")
+    orderbook_placeholder = st.empty() # 用來動態更新五檔
 
 with col_right:
-    st.subheader("⚔️ 即時成交紀錄 (大戶追蹤)")
-    trade_log_placeholder = st.empty()
+    st.subheader("⚔️ 大戶成交明細")
+    trade_log_placeholder = st.empty() # 用來動態更新成交
 
-# --- 5. 數據處理核心 ---
+# --- 5. WebSocket 數據處理核心 ---
+
+# 初始化 session_state 用來存放成交紀錄
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
 
-async def start_monitor():
+async def run_market_data():
     client = WebMdaClient(api_key=API_KEY)
     stock = client.stock
     
-    # 同時訂閱行情與成交明細
+    # 同時訂閱「五檔」與「成交」
     async with stock.connect_quote(symbol=target_stock) as quote_conn, \
                stock.connect_trade(symbol=target_stock) as trade_conn:
         
-        # 建立併發任務
-        quote_task = asyncio.create_task(handle_quotes(quote_conn))
-        trade_task = asyncio.create_task(handle_trades(trade_conn))
-        
-        await asyncio.gather(quote_task, trade_task)
+        # 併發執行兩個監聽任務
+        await asyncio.gather(
+            handle_quote(quote_conn),
+            handle_trade(trade_conn)
+        )
 
-async def handle_quotes(conn):
-    """處理五檔數據"""
+async def handle_quote(conn):
+    """處理五檔變動 (偵測抽單)"""
     async for message in conn:
         if message['event'] == 'data':
             data = message['data']
             bids = data.get('bids', [])
             asks = data.get('asks', [])
             
-            # 轉換為 DataFrame 顯示
-            df_bids = pd.DataFrame(bids).head(5)
-            df_asks = pd.DataFrame(asks).head(5)
-            
-            # 整理出對應的五檔表格
-            display_df = pd.DataFrame({
-                "買張": df_bids['size'] if not df_bids.empty else [],
-                "買價": df_bids['price'] if not df_bids.empty else [],
-                "賣價": df_asks['price'] if not df_asks.empty else [],
-                "賣張": df_asks['size'] if not df_asks.empty else []
+            # 整理五檔表格數據
+            # 買盤取前五，賣盤取前五
+            df_display = pd.DataFrame({
+                "買張": [b.get('size') for b in bids[:5]],
+                "買價": [b.get('price') for b in bids[:5]],
+                "賣價": [a.get('price') for a in asks[:5]],
+                "賣張": [a.get('size') for a in asks[:5]]
             })
-            orderbook_placeholder.table(display_df)
+            orderbook_placeholder.table(df_display)
 
-async def handle_trades(conn):
-    """處理成交明細"""
+async def handle_trade(conn):
+    """處理即時成交 (追蹤大戶)"""
     async for message in conn:
         if message['event'] == 'data':
             data = message['data']
@@ -102,20 +92,20 @@ async def handle_trades(conn):
             v = data.get('size')
             t = datetime.datetime.now().strftime("%H:%M:%S")
             
-            # 判斷是否為大單
-            if v >= large_order_limit:
-                msg = f"🔥 [{t}] 價格: {p} | 大單: {v} 張"
-                st.session_state.trade_history.insert(0, msg)
-            else:
-                msg = f"⚪ [{t}] 價格: {p} | 成交: {v} 張"
-                st.session_state.trade_history.insert(0, msg)
+            # 判斷大單邏輯
+            prefix = "🔴 [大單] " if v >= large_order_limit else "⚪ [成交] "
+            log_entry = f"{prefix} {t} | 價格: {p} | 張數: {v}"
             
-            # 保持紀錄在 15 筆以內
-            st.session_state.trade_history = st.session_state.trade_history[:15]
+            # 更新紀錄清單
+            st.session_state.trade_history.insert(0, log_entry)
+            st.session_state.trade_history = st.session_state.trade_history[:20] # 僅保留最近 20 筆
+            
+            # 渲染到畫面上
             trade_log_placeholder.code("\n".join(st.session_state.trade_history))
 
 # --- 6. 啟動按鈕 ---
-if st.sidebar.button("🚀 開始即時監控"):
-    asyncio.run(start_monitor())
-else:
-    st.warning("請點擊左側『開始即時監控』按鈕啟動 WebSocket 連線。")
+if st.sidebar.button("🚀 啟動即時監控"):
+    try:
+        asyncio.run(run_market_data())
+    except Exception as e:
+        st.error(f"連線中斷或發生錯誤: {e}")
