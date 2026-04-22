@@ -5,7 +5,7 @@ import yfinance as yf
 import time
 import random
 
-st.set_page_config(page_title="Alpha-Trader v25 CONSOLIDATED WALL", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v26 STABLE INSTITUTION", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
@@ -26,7 +26,7 @@ def f2(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL
+# 🌍 GLOBAL MARKET
 # =========================
 @st.cache_data(ttl=5)
 def fetch_global():
@@ -122,14 +122,15 @@ def flow(curr,prev):
 # TRADE TAPE
 # =========================
 def trade_feed(snap):
-    lp = snap["lastPrice"]
-    lv = snap["lastSize"]
-    st.session_state.trades.insert(0, f"{lp:.2f} | {lv}張")
+    st.session_state.trades.insert(
+        0,
+        f"{snap['lastPrice']:.2f} | {snap['lastSize']}張"
+    )
 
 # =========================
 # UI
 # =========================
-st.title("🏛️ Alpha-Trader v25 CONSOLIDATED INSTITUTION WALL")
+st.title("🏛️ Alpha-Trader v26 STABLE CONTROL SYSTEM")
 
 symbol = st.text_input("股票代碼","2330")
 
@@ -175,18 +176,25 @@ with right:
 
     r1,r2=st.columns([1,1])
 
+    # =========================
+    # DELTA (FIXED EMPTY HANDLING)
+    # =========================
     with r1:
         st.subheader("📈 Delta（15筆限制）")
 
         delta_data = flow(snap, st.session_state.last_book)
-        st.code("\n".join(delta_data[:15]) or "無")
+
+        if delta_data and len(delta_data) > 0:
+            st.code("\n".join(delta_data[:15]))
+        else:
+            st.info("穩定監控中（無變動）")
 
     # =========================
-    # 🧠 SINGLE CONSOLIDATED WALL (ONLY ONE)
+    # INSTITUTION WALL
     # =========================
     with r2:
 
-        st.subheader("🧠 機構監控牆（統一15筆）")
+        st.subheader("🧠 機構監控層（15筆）")
 
         flow_data = flow(snap, st.session_state.last_book)
 
@@ -196,15 +204,15 @@ with right:
         alerts = st.session_state.alerts[:15]
         trades = st.session_state.trades[:15]
 
-        wall_col1, wall_col2 = st.columns(2)
+        col1,col2 = st.columns(2)
 
-        with wall_col1:
+        with col1:
             st.markdown("### 🚨 訊號")
-            st.code("\n".join(alerts) or "無")
+            st.code("\n".join(alerts) if alerts else "穩定中")
 
-        with wall_col2:
+        with col2:
             st.markdown("### 📡 即時成交")
-            st.code("\n".join(trades) or "無")
+            st.code("\n".join(trades) if trades else "等待成交")
 
 # =========================
 # METRICS
@@ -223,7 +231,7 @@ with c3:
     st.metric("模式",mode)
 
 # =========================
-# SAVE STATE
+# STATE
 # =========================
 st.session_state.last_book = snap
 
