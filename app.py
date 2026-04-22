@@ -8,147 +8,160 @@ import yfinance as yf
 # --- 1. 配置與初始化 ---
 API_KEY = "MWI2Y2NlMTYtZmNjNy00NGJmLWFkMTYtNDVjZjk2MjJkNzFhIDA1YTliNzZhLWI0NzItNGYxMS1iYTIxLWYyN2ZkNjgzNzI5YQ=="
 
-st.set_page_config(page_title="專業操盤戰情室 - 期現貨連動版", layout="wide")
+st.set_page_config(page_title="專業操盤戰情室 - 數據強化版", layout="wide")
 
-# 初始化 Session State
-state_keys = {
-    'price_stats': {},
-    'index_data': {"price": 0, "percent": 0},
-    'trade_history': [],
-    'last_books_raw': None,
-    'order_alerts': [],
-    'tx_price': {"price": 0, "percent": 0}
-}
-for key, default in state_keys.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+# 初始化狀態，防止 0 覆蓋舊數據
+if 'price_stats' not in st.session_state: st.session_state.price_stats = {}
+if 'mkt_cache' not in st.session_state: 
+    st.session_state.mkt_cache = {
+        "台指期": {"price": "--", "percent": "0.00"},
+        "加權指數": {"price": "--", "percent": "0.00"}
+    }
+if 'trade_history' not in st.session_state: st.session_state.trade_history = []
+if 'order_alerts' not in st.session_state: st.session_state.order_alerts = []
+if 'last_books_raw' not in st.session_state: st.session_state.last_books_raw = None
 
-# --- 2. 核心數據函數 ---
+# --- 2. 強化版數據抓取函數 ---
 
-def fetch_stock_data(symbol):
-    """抓取個股即時快照"""
+def get_market_data():
+    """抓取台指期與大盤 (增加備援邏輯)"""
+    results = {}
+    # 台指期常用代號備案: WTX=F (近月), TX=F (連續), ^TWII (加權現貨)
+    targets = {
+        "台指期": "WTX=F",
+        "加權指數": "^TWII",
+        "日經 225": "^N225",
+        "恒生指數": "^HSI"
+    }
+    
+    for label, sym in targets.items():
+        try:
+            ticker = yf.Ticker(sym)
+            # 使用 history 抓取最新一筆，比 fast_info 在盤後更穩定
+            df = ticker.history(period="1d", interval="1m")
+            if not df.empty:
+                last_price = df['Close'].iloc[-1]
+                prev_close = ticker.info.get('previousClose', last_price)
+                change_pct = ((last_price - prev_close) / prev_close) * 100
+                
+                # 只有當數值大於 0 時才更新快取
+                if last_price > 0:
+                    st.session_state.mkt_cache[label] = {
+                        "price": f"{last_price:.0f}" if "指數" in label or "期" in label else f"{last_price:.2f}",
+                        "percent": f"{change_pct:.2f}"
+                    }
+        except:
+            pass # 抓取失敗則保留上一次的快取數據
+    return st.session_state.mkt_cache
+
+def fetch_stock_snapshot(symbol):
+    """抓取個股五檔與成交"""
     url = f"https://api.fugle.tw/marketdata/v1.0/stock/snapshot/quotes/{symbol}"
     headers = {"X-API-KEY": API_KEY}
     try:
         resp = requests.get(url, headers=headers, timeout=5)
-        return resp.json()
-    except: return None
+        data = resp.json()
+        if data and data.get('lastPrice'):
+            return data
+    except:
+        return None
 
-def get_market_indices():
-    """抓取台指期、加權指數與亞洲盤"""
-    results = {}
-    # 常用代號：台指期近月 (^WTX), 日經 (^N225), 恒生 (^HSI)
-    indices = {
-        "台指期": "WTX=F",    # Yahoo Finance 台指期近月代號
-        "日經 225": "^N225",
-        "恒生指數": "^HSI"
-    }
-    for label, sym in indices.items():
-        try:
-            ticker = yf.Ticker(sym)
-            info = ticker.fast_info
-            price = info['last_price']
-            prev = info['previous_close']
-            results[label] = {
-                "price": price,
-                "percent": ((price - prev) / prev) * 100
-            }
-        except:
-            results[label] = {"price": 0, "percent": 0}
-    return results
+# --- 3. UI 佈局 ---
 
-# --- 3. UI 介面 ---
+st.title("📊 專業操盤手實時戰情室 (數據穩定版)")
 
-st.title("📊 專業操盤手實時戰情室 (期現貨連動)")
+# 頂部大盤看板 (直接讀取強化快照)
+mkt = get_market_data()
+c1, c2, c3, c4 = st.columns(4)
+with c1: st.metric("台指期 (TXF)", mkt["台指期"]["price"], f"{mkt['台指期']['percent']}%")
+with c2: st.metric("台股加權 (TSE)", mkt["加權指數"]["price"], f"{mkt['加權指數']['percent']}%")
+with c3: st.metric("日經 225", mkt.get("日經 225", {}).get("price", "--"), f"{mkt.get('日經 225', {}).get('percent', '0')}%")
+with c4: st.metric("恒生指數", mkt.get("恒生指數", {}).get("price", "--"), f"{mkt.get('恒生指數', {}).get('percent', '0')}%")
 
-# 頂部大盤看板
-mkt = get_market_indices()
-idx_c1, idx_c2, idx_c3, idx_c4 = st.columns(4)
-with idx_c1: 
-    st.metric("台指期 (近月)", f"{mkt['台指期']['price']:.0f}", f"{mkt['台指期']['percent']:.2f}%")
-with idx_c2:
-    # 加權指數改由個股 Snapshot 帶回的數據更新，或顯示快取
-    st.metric("台股加權", f"{st.session_state.index_data['price']}", f"{st.session_state.index_data['percent']}%")
-with idx_c3: 
-    st.metric("日經 225", f"{mkt['日經 225']['price']:.0f}", f"{mkt['日經 225']['percent']:.2f}%")
-with idx_c4: 
-    st.metric("恒生指數", f"{mkt['恒生指數']['price']:.0f}", f"{mkt['恒生指數']['percent']:.2f}%")
-
-# 側邊欄
+# 側邊控制
 with st.sidebar:
-    st.header("操作面板")
-    stock_target = st.text_input("股票代號", value="2330").upper()
+    st.header("監控參數")
+    stock_target = st.text_input("輸入個股代號", value="2330").upper()
     run_switch = st.toggle("🚀 啟動即時監控", value=False)
     st.divider()
-    alert_threshold = st.number_input("掛單變動警示閾值 (張)", value=50)
-    if st.button("🗑️ 重置所有統計"):
-        for key in ['price_stats', 'trade_history', 'order_alerts']: st.session_state[key] = [] if isinstance(state_keys[key], list) else {}
+    alert_val = st.number_input("掛單異動警示 (張)", value=50)
+    if st.button("🗑️ 清除所有紀錄"):
+        st.session_state.price_stats = {}
+        st.session_state.trade_history = []
+        st.session_state.order_alerts = []
         st.session_state.last_books_raw = None
         st.rerun()
+    
+    # 診斷資訊
+    st.write("---")
+    st.caption(f"最後檢查時間: {datetime.datetime.now().strftime('%H:%M:%S')}")
+    if run_switch:
+        st.success("數據輪詢中...")
+    else:
+        st.warning("監控已停止")
 
+# 主畫面佈局
 col_l, col_m, col_r = st.columns([1.1, 1.2, 0.7])
 
-# --- 4. 監控與分析邏輯 ---
+# --- 4. 監控邏輯 ---
 
 if run_switch:
-    stock_data = fetch_stock_data(stock_target)
+    data = fetch_stock_snapshot(stock_target)
     
-    if stock_data:
-        # A. 五檔分析
-        current_bids = {item['price']: item['size'] for item in stock_data.get('bids', [])}
-        current_asks = {item['price']: item['size'] for item in stock_data.get('asks', [])}
+    if data:
+        # A. 五檔異動分析 (壓單/支撐/抽單)
+        curr_b = {item['price']: item['size'] for item in data.get('bids', [])}
+        curr_a = {item['price']: item['size'] for item in data.get('asks', [])}
         
         if st.session_state.last_books_raw:
-            old_bids = st.session_state.last_books_raw['bids']
-            old_asks = st.session_state.last_books_raw['asks']
+            old_b = st.session_state.last_books_raw['bids']
+            old_a = st.session_state.last_books_raw['asks']
             
-            # 偵測壓單 (Ask) 與 支撐 (Bid)
-            for price, size in current_asks.items():
-                if price in old_asks:
-                    diff = size - old_asks[price]
-                    if abs(diff) >= alert_threshold:
-                        action = "🔴 增加壓單" if diff > 0 else "⚪ 壓力撤單"
-                        st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {price} | {action} {abs(diff)}張")
+            # 比對賣盤變動 (壓力)
+            for p, s in curr_a.items():
+                if p in old_a:
+                    diff = s - old_a[p]
+                    if abs(diff) >= alert_val:
+                        tag = "🔴 壓單增加" if diff > 0 else "⚪ 壓力抽單"
+                        st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {p} | {tag} {abs(diff)}張")
 
-            for price, size in current_bids.items():
-                if price in old_bids:
-                    diff = size - old_bids[price]
-                    if abs(diff) >= alert_threshold:
-                        action = "🟢 增加支撐" if diff > 0 else "⚪ 支撐撤單"
-                        st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {price} | {action} {abs(diff)}張")
+            # 比對買盤變動 (支撐)
+            for p, s in curr_b.items():
+                if p in old_b:
+                    diff = s - old_b[p]
+                    if abs(diff) >= alert_val:
+                        tag = "🟢 支撐增加" if diff > 0 else "⚪ 支撐抽單"
+                        st.session_state.order_alerts.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {p} | {tag} {abs(diff)}張")
 
-        st.session_state.last_books_raw = {'bids': current_bids, 'asks': current_asks}
+        st.session_state.last_books_raw = {'bids': curr_b, 'asks': curr_a}
 
-        # B. 更新加權指數數據
-        st.session_state.index_data = {"price": stock_data.get('lastPrice', 0), "percent": stock_data.get('changePercent', 0)}
-        
+        # B. 渲染 UI
         with col_l:
             st.subheader("🏛️ 即時五檔")
-            b_df = pd.DataFrame(stock_data.get('bids', [])).rename(columns={'price':'買價','size':'買量'})
-            a_df = pd.DataFrame(stock_data.get('asks', [])).rename(columns={'price':'賣價','size':'賣量'})
+            b_df = pd.DataFrame(data.get('bids', [])).rename(columns={'price':'買價','size':'買量'})
+            a_df = pd.DataFrame(data.get('asks', [])).rename(columns={'price':'賣價','size':'賣量'})
             st.dataframe(pd.concat([b_df, a_df], axis=1), use_container_width=True)
-            
             st.subheader("⚠️ 掛單動態分析")
-            st.code("\n".join(st.session_state.order_alerts[:12]))
+            st.code("\n".join(st.session_state.order_alerts[:15]))
 
         with col_m:
             st.subheader("📈 分價成交分布")
-            curr_p, curr_v = stock_data.get('lastPrice'), stock_data.get('lastSize')
-            if curr_p:
-                p_s = str(curr_p)
-                if p_s not in st.session_state.price_stats: st.session_state.price_stats[p_s] = {'成交量':0}
-                st.session_state.price_stats[p_s]['成交量'] += curr_v
+            cp, cv = data.get('lastPrice'), data.get('lastSize')
+            if cp:
+                ps = str(cp)
+                if ps not in st.session_state.price_stats: st.session_state.price_stats[ps] = 0
+                st.session_state.price_stats[ps] += cv
             
             if st.session_state.price_stats:
-                df = pd.DataFrame.from_dict(st.session_state.price_stats, orient='index').sort_index(ascending=False)
+                df = pd.DataFrame.from_dict(st.session_state.price_stats, orient='index', columns=['成交量']).sort_index(ascending=False)
                 st.bar_chart(df)
                 st.dataframe(df, use_container_width=True)
 
         with col_r:
             st.subheader("🔔 即時成交明細")
-            if curr_p:
-                st.session_state.trade_history.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {curr_p} | {curr_v}張")
-            st.code("\n".join(st.session_state.trade_history[:20]))
+            if cp:
+                st.session_state.trade_history.insert(0, f"{datetime.datetime.now().strftime('%H:%M:%S')} | {cp} | {cv}張")
+            st.code("\n".join(st.session_state.trade_history[:25]))
 
     time.sleep(2)
     st.rerun()
