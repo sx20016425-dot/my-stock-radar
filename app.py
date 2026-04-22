@@ -2,36 +2,55 @@ import streamlit as st
 import pandas as pd
 import requests
 import yfinance as yf
-import numpy as np
-import time
-import datetime
 import random
+import time
 
-st.set_page_config(page_title="Alpha-Trader v27 OrderFlow Engine", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v28 FIXED", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# STATE
+# 🧠 STATE SAFE
 # =========================
-def init():
-    for k in ["book", "trades", "alerts"]:
-        if k not in st.session_state:
-            st.session_state[k] = []
-
-init()
+for k in ["book", "alerts"]:
+    if k not in st.session_state:
+        st.session_state[k] = []
 
 # =========================
 # SAFE FORMAT
 # =========================
 def f(x):
     try:
-        return f"{float(x):.2f}"
+        return "--" if x is None else f"{float(x):.2f}"
     except:
         return "--"
 
 # =========================
-# STOCK DATA
+# 🌍 GLOBAL (NEVER REMOVE)
+# =========================
+def global_market():
+    idx = {
+        "S&P500": "^GSPC",
+        "NASDAQ": "^IXIC",
+        "日經": "^N225",
+        "恆生": "^HSI",
+        "韓國": "^KS11"
+    }
+
+    out = {}
+    for k, v in idx.items():
+        try:
+            df = yf.Ticker(v).history(period="2d")
+            p = float(df["Close"].iloc[-1])
+            prev = float(df["Close"].iloc[-2])
+            out[k] = (p, (p - prev) / prev * 100)
+        except:
+            out[k] = (None, None)
+
+    return out
+
+# =========================
+# STOCK ENGINE
 # =========================
 def fetch(symbol):
     try:
@@ -45,124 +64,95 @@ def fetch(symbol):
     except:
         pass
 
-    # fallback SIM
+    # fallback SIM (NO LOSS)
     df = yf.Ticker(f"{symbol}.TW").history(period="1d")
+    if df is None or df.empty:
+        return {
+            "bids": [],
+            "asks": [],
+            "lastPrice": None,
+            "lastSize": None
+        }, "FAIL"
+
     p = float(df["Close"].iloc[-1])
 
     return {
-        "bids": [{"price": p-i*0.5, "size": random.randint(10,100)} for i in range(5)],
-        "asks": [{"price": p+i*0.5, "size": random.randint(10,100)} for i in range(5)],
+        "bids": [{"price": p-i*0.5, "size": random.randint(10,80)} for i in range(5)],
+        "asks": [{"price": p+i*0.5, "size": random.randint(10,80)} for i in range(5)],
         "lastPrice": p,
-        "lastSize": random.randint(1,80)
+        "lastSize": random.randint(1,50)
     }, "SIM"
 
 # =========================
-# ORDER FLOW ENGINE
-# =========================
-def detect_flow(curr, prev):
-    alerts = []
-
-    if not prev:
-        return alerts
-
-    # 1st & 2nd level
-    for i in range(2):
-        try:
-            bp = curr["bids"][i]
-            ap = curr["asks"][i]
-
-            pb = prev["bids"][i]
-            pa = prev["asks"][i]
-
-            # 🟢 Bid aggression
-            if bp["size"] > pb["size"] * 1.5:
-                alerts.append(f"🟢 買盤加單 {bp['price']} +{bp['size']-pb['size']}")
-
-            if bp["size"] < pb["size"] * 0.5:
-                alerts.append(f"⚪ 買盤抽單 {bp['price']} -{pb['size']-bp['size']}")
-
-            # 🔴 Ask pressure
-            if ap["size"] > pa["size"] * 1.5:
-                alerts.append(f"🔴 賣壓加單 {ap['price']} +{ap['size']-pa['size']}")
-
-            if ap["size"] < pa["size"] * 0.5:
-                alerts.append(f"⚪ 賣壓抽單 {ap['price']} -{pa['size']-ap['size']}")
-
-        except:
-            continue
-
-    return alerts
-
-# =========================
-# TABLE
+# SAFE TABLE
 # =========================
 def book(bids, asks):
-    n = max(len(bids), len(asks), 5)
+    try:
+        n = 5
+        bids = (bids or []) + [{} for _ in range(n - len(bids or []))]
+        asks = (asks or []) + [{} for _ in range(n - len(asks or []))]
 
-    bids = (bids or []) + [{} for _ in range(n - len(bids or []))]
-    asks = (asks or []) + [{} for _ in range(n - len(asks or []))]
-
-    return pd.DataFrame({
-        "買價": [x.get("price") for x in bids],
-        "買量": [x.get("size") for x in bids],
-        "賣價": [x.get("price") for x in asks],
-        "賣量": [x.get("size") for x in asks],
-    })
+        return pd.DataFrame({
+            "買價": [x.get("price") for x in bids],
+            "買量": [x.get("size") for x in bids],
+            "賣價": [x.get("price") for x in asks],
+            "賣量": [x.get("size") for x in asks],
+        })
+    except:
+        return pd.DataFrame(columns=["買價","買量","賣價","賣量"])
 
 # =========================
-# UI
+# UI CONTRACT (CORE NEVER DISAPPEARS)
 # =========================
-st.title("🏛️ v27 Order Flow Intelligence Engine")
+st.title("🏛️ v28 FIXED Stable Trading Engine")
 
-symbol = st.text_input("股票", "2330")
+symbol = st.text_input("股票代碼", "2330")
 
 snap, mode = fetch(symbol)
 
 bids = snap["bids"]
 asks = snap["asks"]
 
-# =========================
-# FLOW DETECTION
-# =========================
-curr = {"bids": bids, "asks": asks}
-prev = st.session_state.book
-
-alerts = detect_flow(curr, prev)
-
-for a in alerts:
-    st.session_state.alerts.insert(0, a)
-
-st.session_state.book = curr
+lp = snap.get("lastPrice")
+lv = snap.get("lastSize")
 
 # =========================
-# ORDER BOOK
+# 🌍 GLOBAL (MUST ALWAYS SHOW)
 # =========================
-st.subheader("📊 五檔攻防")
+st.subheader("🌍 全球市場")
+
+g = global_market()
+cols = st.columns(len(g))
+
+for i, (k, v) in enumerate(g.items()):
+    p, pct = v
+    cols[i].metric(k, f(p), f"{pct:.2f}%" if pct else "--")
+
+st.divider()
+
+# =========================
+# 📊 ORDERBOOK (MUST ALWAYS SHOW)
+# =========================
+st.subheader("📊 五檔")
 
 st.dataframe(book(bids, asks), use_container_width=True)
 
 # =========================
-# LAST TRADE
+# 📡 PRICE (MUST ALWAYS SHOW)
 # =========================
 st.subheader("📡 即時成交")
 
-lp = snap.get("lastPrice")
-lv = snap.get("lastSize")
-
-st.metric("成交價", f(lp:.2f}" if lp else "--")
+st.metric("成交價", f(lp))
 st.metric("成交量", lv)
 
-st.session_state.trades.insert(0, f"{lp} | {lv}")
+# =========================
+# 🚨 STATUS (MUST ALWAYS SHOW)
+# =========================
+st.subheader("🚨 系統狀態")
+st.write(mode)
 
 # =========================
-# ALERTS
-# =========================
-st.subheader("🚨 Order Flow 警報")
-
-st.code("\n".join(st.session_state.alerts[:20]) or "無")
-
-# =========================
-# LOOP
+# LOOP SAFE
 # =========================
 time.sleep(2)
 st.rerun()
