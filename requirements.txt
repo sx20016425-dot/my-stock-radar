@@ -1,16 +1,5 @@
-# 核心 Web 框架
-streamlit
-
-# 數據處理與數學運算
-pandas
-numpy
-
-# 富果行情 API (台股 WebSocket)
-fugle-marketdata
-
-# 美股行情抓取 (Yahoo Finance)
-yfinance
-
-# 網路連線處理
 requests
-urllib3
+pandas
+yfinance
+plotly
+streamlit
