@@ -6,21 +6,16 @@ import time
 import random
 import datetime
 
-st.set_page_config(page_title="Alpha-Trader v18 FULL CORE", layout="wide")
+st.set_page_config(page_title="Alpha-Trader v19 ORDER FLOW", layout="wide")
 
 API_KEY = st.secrets.get("FUGLE_API_KEY", "")
 
 # =========================
-# INIT
+# STATE
 # =========================
-for k, v in {
-    "last_book": None,
-    "alerts": [],
-    "trades": [],
-    "signals": []
-}.items():
+for k in ["last_book", "alerts", "trades", "signals"]:
     if k not in st.session_state:
-        st.session_state[k] = v
+        st.session_state[k] = [] if k != "last_book" else None
 
 # =========================
 # FORMAT
@@ -32,7 +27,7 @@ def f2(x):
         return "--"
 
 # =========================
-# 🌍 GLOBAL INDEX (RESTORED)
+# 🌍 GLOBAL
 # =========================
 @st.cache_data(ttl=5)
 def fetch_global():
@@ -47,21 +42,15 @@ def fetch_global():
     for k, v in idx.items():
         try:
             df = yf.Ticker(v).history(period="2d")
-            if df is None or df.empty:
-                raise Exception("no data")
-
             p = float(df["Close"].iloc[-1])
-            prev = float(df["Close"].iloc[-2]) if len(df) > 1 else p
-            pct = (p - prev) / prev * 100
-
-            out[k] = (p, pct)
+            prev = float(df["Close"].iloc[-2])
+            out[k] = (p, (p-prev)/prev*100)
         except:
             out[k] = (None, None)
-
     return out
 
 # =========================
-# STOCK DATA
+# STOCK
 # =========================
 def fetch_stock(symbol):
     try:
@@ -75,34 +64,25 @@ def fetch_stock(symbol):
     except:
         pass
 
-    try:
-        df = yf.Ticker(f"{symbol}.TW").history(period="1d")
-        if df is None or df.empty:
-            return None, "NONE"
-
-        p = float(df["Close"].iloc[-1])
-
-        bids = [{"price": p - i*0.5, "size": random.randint(10,80)} for i in range(5)]
-        asks = [{"price": p + i*0.5, "size": random.randint(10,80)} for i in range(5)]
-
-        return {
-            "bids": bids,
-            "asks": asks,
-            "lastPrice": p,
-            "lastSize": random.randint(1,50)
-        }, "SIM"
-
-    except:
+    df = yf.Ticker(f"{symbol}.TW").history(period="1d")
+    if df is None or df.empty:
         return None, "NONE"
 
+    p = float(df["Close"].iloc[-1])
+
+    return {
+        "bids": [{"price": p-i*0.5, "size": random.randint(10,80)} for i in range(5)],
+        "asks": [{"price": p+i*0.5, "size": random.randint(10,80)} for i in range(5)],
+        "lastPrice": p,
+        "lastSize": random.randint(1,50)
+    }, "SIM"
+
 # =========================
-# SAFE BOOK (FIXED)
+# BOOK SAFE
 # =========================
 def safe_book(bids, asks):
-    n = max(len(bids), len(asks), 1)
-
-    bids = bids + [{} for _ in range(n - len(bids))]
-    asks = asks + [{} for _ in range(n - len(asks))]
+    bids = bids + [{} for _ in range(5-len(bids))]
+    asks = asks + [{} for _ in range(5-len(asks))]
 
     return pd.DataFrame({
         "買價": [x.get("price") for x in bids],
@@ -112,60 +92,74 @@ def safe_book(bids, asks):
     })
 
 # =========================
-# ENGINE
+# 🧠 DELTA ENGINE (核心補上)
 # =========================
-def imbalance(b, a):
-    try:
-        return (sum(b.values()) - sum(a.values())) / (sum(b.values()) + sum(a.values()) + 1)
-    except:
-        return 0
+def delta(curr, prev):
+    if not prev:
+        return None
 
-def signal_engine(score, imb, lv):
-    sig = []
+    rows = []
+    for i in range(2):  # 交戰區
+        cb = curr["bids"][i]
+        pb = prev["bids"][i]
 
-    if score > 65 and imb > 0.2:
-        sig.append(("LONG", "多單進場"))
+        ca = curr["asks"][i]
+        pa = prev["asks"][i]
 
-    if score < 35 and imb < -0.2:
-        sig.append(("SHORT", "空單進場"))
+        rows.append([
+            cb["price"], cb["size"] - pb["size"],
+            ca["price"], ca["size"] - pa["size"]
+        ])
 
-    if lv and lv > 40 and score > 60:
-        sig.append(("BREAK", "突破"))
+    return pd.DataFrame(rows, columns=["買價","買量Δ","賣價","賣量Δ"])
 
-    if lv and lv > 40 and score < 40:
-        sig.append(("FAKE", "假突破"))
+# =========================
+# 🧠 ORDER FLOW (升級)
+# =========================
+def flow(curr, prev):
+    alerts = []
+    if not prev:
+        return alerts
 
-    return sig
+    for i in range(2):
+        cb = curr["bids"][i]
+        pb = prev["bids"][i]
 
-def action(sig, lp):
-    if sig == "LONG":
-        return f"🟢 做多 @ {f2(lp)}"
-    if sig == "SHORT":
-        return f"🔴 做空 @ {f2(lp)}"
-    if sig == "BREAK":
-        return f"🚀 追突破 @ {f2(lp)}"
-    if sig == "FAKE":
-        return f"⚠️ 假突破 @ {f2(lp)}"
-    return None
+        ca = curr["asks"][i]
+        pa = prev["asks"][i]
+
+        # 加單
+        if cb["size"] > pb["size"]*1.5:
+            alerts.append(f"🟢 買一加單 {cb['price']:.2f}")
+
+        if ca["size"] > pa["size"]*1.5:
+            alerts.append(f"🔴 賣一壓單 {ca['price']:.2f}")
+
+        # 抽單
+        if cb["size"] < pb["size"]*0.5:
+            alerts.append(f"⚪ 買一抽單 {cb['price']:.2f}")
+
+        if ca["size"] < pa["size"]*0.5:
+            alerts.append(f"⚪ 賣一撤單 {ca['price']:.2f}")
+
+    return alerts
 
 # =========================
 # UI
 # =========================
-st.title("🏛️ Alpha-Trader v18 FULL SYSTEM")
+st.title("🏛️ Alpha Trader v19 ORDER FLOW ENGINE")
 
-symbol = st.text_input("股票代碼", "2330")
+symbol = st.text_input("股票", "2330")
 
 # =========================
-# 🌍 GLOBAL PANEL (RESTORED)
+# GLOBAL
 # =========================
-st.subheader("🌍 全球市場")
-
-global_data = fetch_global()
+g = fetch_global()
 cols = st.columns(4)
 
-for i, (k, v) in enumerate(global_data.items()):
-    p, pct = v
-    cols[i].metric(k, f2(p), f"{pct:.2f}%" if pct else "--")
+for i,(k,v) in enumerate(g.items()):
+    p,pct = v
+    cols[i].metric(k, f2(p), f"{pct:.2f}%")
 
 st.divider()
 
@@ -175,76 +169,52 @@ st.divider()
 snap, mode = fetch_stock(symbol)
 
 if not snap:
-    st.error("無資料")
+    st.error("NO DATA")
     st.stop()
 
 bids = snap["bids"]
 asks = snap["asks"]
 
-curr_b = {x.get("price"): x.get("size") for x in bids if x}
-curr_a = {x.get("price"): x.get("size") for x in asks if x}
+lp = snap["lastPrice"]
+lv = snap["lastSize"]
 
-lp = snap.get("lastPrice")
-lv = snap.get("lastSize")
-
-# =========================
-# SCORE
-# =========================
-imb = imbalance(curr_b, curr_a)
-score = 50 + imb * 100
-
-# =========================
-# SIGNALS
-# =========================
-signals = signal_engine(score, imb, lv)
-
-for s in signals:
-    st.session_state.signals.insert(0, s[1])
-    act = action(s[0], lp)
-    if act:
-        st.session_state.trades.insert(0, act)
-
-# =========================
-# BOOK
-# =========================
 st.subheader("📊 五檔")
-st.dataframe(safe_book(bids, asks), use_container_width=True)
+st.dataframe(safe_book(bids,asks), use_container_width=True)
 
 # =========================
-# DASHBOARD
+# DELTA TABLE（補回核心）
 # =========================
-c1, c2, c3 = st.columns(3)
+st.subheader("📈 掛單變化 (Delta)")
+
+st.dataframe(delta(snap, st.session_state.last_book), use_container_width=True)
+
+# =========================
+# FLOW ENGINE
+# =========================
+alerts = flow(snap, st.session_state.last_book)
+
+for a in alerts:
+    st.session_state.alerts.insert(0,a)
+
+st.session_state.last_book = snap
+
+# =========================
+# DISPLAY
+# =========================
+c1,c2,c3 = st.columns(3)
 
 with c1:
-    st.metric("多空強度", f"{score:.1f}")
-
-with c2:
-    st.metric("市場失衡", f"{imb:.3f}")
-
-with c3:
     st.metric("成交價", f2(lp))
+with c2:
+    st.metric("成交量", lv)
+with c3:
+    st.metric("模式", mode)
+
+st.subheader("🚨 即時盤口訊號")
+st.code("\n".join(st.session_state.alerts[:30]) or "無")
 
 # =========================
-# OUTPUT
+# LOOP
 # =========================
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.subheader("🚨 訊號")
-    st.code("\n".join([str(x) for x in st.session_state.signals[:20]]) or "無")
-
-with col2:
-    st.subheader("📜 交易決策")
-    st.code("\n".join([str(x) for x in st.session_state.trades[:20]]) or "無")
-
-with col3:
-    st.subheader("⚠️ 警報")
-    st.code("\n".join([str(x) for x in st.session_state.alerts[:20]]) or "無")
-
-# =========================
-# UPDATE
-# =========================
-st.session_state.trades.insert(0, f"{f2(lp)} | {lv}")
-
 time.sleep(2)
 st.rerun()
