@@ -19,11 +19,24 @@ except ImportError:
     RestClient = None
     WebSocketClient = None
 
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
 
 TAIPEI_TZ = zoneinfo.ZoneInfo("Asia/Taipei")
 DEFAULT_SYMBOLS = ["2330", "2317"]
 MAX_RECENT_TRADES = 50
 UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
+BENCHMARK_SYMBOLS = [
+    {"label": "台指期貨", "symbol": "IX0126.TW"},
+    {"label": "日本", "symbol": "^N225"},
+    {"label": "香港", "symbol": "^HSI"},
+    {"label": "韓國", "symbol": "^KS11"},
+    {"label": "那斯達克", "symbol": "^IXIC"},
+    {"label": "標普500", "symbol": "^GSPC"},
+]
 
 
 def now_taipei() -> datetime:
@@ -43,6 +56,24 @@ def format_fugle_time(value: Any) -> str:
         return datetime.fromtimestamp(timestamp, TAIPEI_TZ).strftime("%H:%M:%S")
     except Exception:
         return str(value)
+
+
+def format_benchmark_time(value: Any) -> str:
+    if value in (None, ""):
+        return "-"
+
+    try:
+        if isinstance(value, pd.Timestamp):
+            ts = value
+        else:
+            ts = pd.Timestamp(value)
+
+        if ts.tzinfo is None:
+            return ts.strftime("%H:%M")
+
+        return ts.tz_convert(TAIPEI_TZ).strftime("%H:%M")
+    except Exception:
+        return "-"
 
 
 def normalize_symbols(raw: str) -> list[str]:
@@ -135,6 +166,82 @@ def test_rest_quote(api_key: str, symbol: str) -> dict[str, Any]:
         }
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_benchmark_data() -> dict[str, Any]:
+    if yf is None:
+        return {
+            "ok": False,
+            "message": "yfinance 套件未安裝，無法載入國際指標。",
+            "items": [],
+        }
+
+    items: list[dict[str, Any]] = []
+    failures: list[str] = []
+
+    for config in BENCHMARK_SYMBOLS:
+        label = config["label"]
+        symbol = config["symbol"]
+        try:
+            ticker = yf.Ticker(symbol)
+            history = ticker.history(period="2d", interval="1m", auto_adjust=False, prepost=True)
+            if history.empty:
+                history = ticker.history(period="5d", interval="1d", auto_adjust=False)
+
+            close_series = history["Close"].dropna()
+            if close_series.empty:
+                raise ValueError("查無價格資料")
+
+            last_price = float(close_series.iloc[-1])
+
+            previous_close = None
+            fast_info = getattr(ticker, "fast_info", None)
+            if fast_info:
+                previous_close = fast_info.get("previousClose") or fast_info.get("previous_close")
+
+            if previous_close in (None, 0):
+                if len(close_series) >= 2:
+                    previous_close = float(close_series.iloc[-2])
+                else:
+                    previous_close = last_price
+
+            change = last_price - float(previous_close)
+            change_pct = 0.0 if previous_close == 0 else (change / float(previous_close)) * 100
+            timestamp = close_series.index[-1]
+
+            items.append(
+                {
+                    "label": label,
+                    "symbol": symbol,
+                    "price": round(last_price, 2),
+                    "change": round(change, 2),
+                    "change_pct": round(change_pct, 2),
+                    "time": format_benchmark_time(timestamp),
+                }
+            )
+        except Exception as exc:
+            failures.append(f"{label}: {exc}")
+            items.append(
+                {
+                    "label": label,
+                    "symbol": symbol,
+                    "price": None,
+                    "change": None,
+                    "change_pct": None,
+                    "time": "-",
+                }
+            )
+
+    message = "國際指標載入成功。"
+    if failures:
+        message = "部分國際指標載入失敗：" + " | ".join(failures[:3])
+
+    return {
+        "ok": len(failures) < len(BENCHMARK_SYMBOLS),
+        "message": message,
+        "items": items,
+    }
+
+
 @dataclass
 class SymbolState:
     book: dict[str, Any] | None = None
@@ -213,6 +320,7 @@ class FugleRealtimeStore:
         if isinstance(message, str):
             try:
                 import json
+
                 payload = json.loads(message)
             except Exception:
                 return
@@ -430,6 +538,32 @@ def get_raw_api_key() -> tuple[str | None, str]:
     return None, "未載入"
 
 
+def render_benchmark_section(benchmark_result: dict[str, Any]) -> None:
+    st.subheader("全球指標監測")
+    st.caption("此區為國際市場參考指標，使用 Yahoo Finance 公開行情，可能為延遲報價。")
+
+    items = benchmark_result.get("items", [])
+    first_row = st.columns(3)
+    second_row = st.columns(3)
+    columns = first_row + second_row
+
+    for idx, item in enumerate(items):
+        col = columns[idx]
+        price = "-" if item.get("price") is None else f"{item['price']:,.2f}"
+        change = item.get("change")
+        change_pct = item.get("change_pct")
+        if change is None or change_pct is None:
+            delta = "資料暫缺"
+        else:
+            sign = "+" if change > 0 else ""
+            delta = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)"
+        col.metric(item["label"], price, delta=delta)
+        col.caption(f"{item.get('time', '-')} | {item['symbol']}")
+
+    if benchmark_result.get("message"):
+        st.caption(benchmark_result["message"])
+
+
 st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
 
 st.title("台股即時監控台")
@@ -445,6 +579,7 @@ with st.sidebar:
 raw_api_key, api_key_source = get_raw_api_key()
 api_key, api_key_note = normalize_fugle_api_key(raw_api_key)
 using_mock = not api_key or WebSocketClient is None
+benchmark_result = fetch_benchmark_data()
 
 if using_mock:
     st.warning("目前為示範模式。請在 Streamlit secrets 設定 FUGLE_API_KEY 後切換為即時行情。")
@@ -469,6 +604,8 @@ else:
     snapshots = store.snapshot(symbols)
     status = store.status()
     rest_result = test_rest_quote(api_key, symbols[0])
+
+render_benchmark_section(benchmark_result)
 
 status_cols = st.columns(6)
 status_cols[0].metric("模式", "即時" if not using_mock else "示範")
