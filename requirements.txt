@@ -1,0 +1,3 @@
+streamlit>=1.56.0
+pandas>=2.2.0
+fugle-marketdata>=2.4.1
