@@ -30,12 +30,12 @@ DEFAULT_SYMBOLS = ["2330", "2317"]
 MAX_RECENT_TRADES = 50
 UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
 BENCHMARK_SYMBOLS = [
-    {"label": "台指期貨", "symbol": "IX0126.TW"},
-    {"label": "日本", "symbol": "^N225"},
-    {"label": "香港", "symbol": "^HSI"},
-    {"label": "韓國", "symbol": "^KS11"},
-    {"label": "那斯達克", "symbol": "^IXIC"},
-    {"label": "標普500", "symbol": "^GSPC"},
+    {"label": "台指期參考", "symbol": "IX0126.TW", "note": "期貨指數參考"},
+    {"label": "日經225", "symbol": "^N225", "note": "現貨指數參考"},
+    {"label": "恆生指數", "symbol": "^HSI", "note": "現貨指數參考"},
+    {"label": "韓國KOSPI", "symbol": "^KS11", "note": "現貨指數參考"},
+    {"label": "那指期貨參考", "symbol": "NQ=F", "note": "期貨參考"},
+    {"label": "標普期貨參考", "symbol": "ES=F", "note": "期貨參考"},
 ]
 
 
@@ -165,7 +165,7 @@ def fetch_benchmark_data() -> dict[str, Any]:
     if yf is None:
         return {
             "ok": False,
-            "message": "yfinance 套件未安裝，無法載入全球指數。",
+            "message": "yfinance 套件未安裝，無法載入全球指數參考。",
             "items": [],
         }
 
@@ -175,6 +175,7 @@ def fetch_benchmark_data() -> dict[str, Any]:
     for config in BENCHMARK_SYMBOLS:
         label = config["label"]
         symbol = config["symbol"]
+        note = config["note"]
         try:
             ticker = yf.Ticker(symbol)
             history = ticker.history(period="2d", interval="1m", auto_adjust=False, prepost=True)
@@ -202,6 +203,7 @@ def fetch_benchmark_data() -> dict[str, Any]:
                 {
                     "label": label,
                     "symbol": symbol,
+                    "note": note,
                     "price": round(last_price, 2),
                     "change": round(change, 2),
                     "change_pct": round(change_pct, 2),
@@ -214,6 +216,7 @@ def fetch_benchmark_data() -> dict[str, Any]:
                 {
                     "label": label,
                     "symbol": symbol,
+                    "note": note,
                     "price": None,
                     "change": None,
                     "change_pct": None,
@@ -221,9 +224,9 @@ def fetch_benchmark_data() -> dict[str, Any]:
                 }
             )
 
-    message = "全球指數載入成功。"
+    message = "全球指數參考載入成功。"
     if failures:
-        message = "部分全球指數載入失敗：" + " | ".join(failures[:3])
+        message = "部分全球指數參考載入失敗：" + " | ".join(failures[:3])
 
     return {
         "ok": len(failures) < len(BENCHMARK_SYMBOLS),
@@ -309,6 +312,7 @@ class FugleRealtimeStore:
         if isinstance(message, str):
             try:
                 import json
+
                 payload = json.loads(message)
             except Exception:
                 return
@@ -528,8 +532,8 @@ def get_raw_api_key() -> tuple[str | None, str]:
 
 def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
     st.markdown("---")
-    st.subheader("全球指數")
-    st.caption("國際市場參考，可能為延遲報價。")
+    st.subheader("全球指數參考")
+    st.caption("此區為參考數據，可能為延遲報價，非交易所即時成交。")
 
     for item in benchmark_result.get("items", []):
         label = item.get("label", "-")
@@ -537,6 +541,7 @@ def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
         change = item.get("change")
         change_pct = item.get("change_pct")
         symbol = item.get("symbol", "-")
+        note = item.get("note", "參考")
         timestamp = item.get("time", "-")
 
         if price is None:
@@ -549,6 +554,7 @@ def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
 
         st.metric(label, price_text, delta=delta)
         st.caption(f"{timestamp} | {symbol}")
+        st.caption(note)
 
     if benchmark_result.get("message"):
         st.caption(benchmark_result["message"])
