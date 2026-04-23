@@ -63,14 +63,9 @@ def format_benchmark_time(value: Any) -> str:
         return "-"
 
     try:
-        if isinstance(value, pd.Timestamp):
-            ts = value
-        else:
-            ts = pd.Timestamp(value)
-
+        ts = value if isinstance(value, pd.Timestamp) else pd.Timestamp(value)
         if ts.tzinfo is None:
             return ts.strftime("%H:%M")
-
         return ts.tz_convert(TAIPEI_TZ).strftime("%H:%M")
     except Exception:
         return "-"
@@ -151,8 +146,7 @@ def test_rest_quote(api_key: str, symbol: str) -> dict[str, Any]:
 
     try:
         client = RestClient(api_key=api_key)
-        stock = client.stock
-        quote = stock.intraday.quote(symbol=symbol)
+        quote = client.stock.intraday.quote(symbol=symbol)
         return {
             "ok": True,
             "message": f"REST 測試成功：已取得 {symbol} 報價。",
@@ -171,7 +165,7 @@ def fetch_benchmark_data() -> dict[str, Any]:
     if yf is None:
         return {
             "ok": False,
-            "message": "yfinance 套件未安裝，無法載入國際指標。",
+            "message": "yfinance 套件未安裝，無法載入全球指數。",
             "items": [],
         }
 
@@ -192,17 +186,13 @@ def fetch_benchmark_data() -> dict[str, Any]:
                 raise ValueError("查無價格資料")
 
             last_price = float(close_series.iloc[-1])
-
             previous_close = None
             fast_info = getattr(ticker, "fast_info", None)
             if fast_info:
                 previous_close = fast_info.get("previousClose") or fast_info.get("previous_close")
 
             if previous_close in (None, 0):
-                if len(close_series) >= 2:
-                    previous_close = float(close_series.iloc[-2])
-                else:
-                    previous_close = last_price
+                previous_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else last_price
 
             change = last_price - float(previous_close)
             change_pct = 0.0 if previous_close == 0 else (change / float(previous_close)) * 100
@@ -231,9 +221,9 @@ def fetch_benchmark_data() -> dict[str, Any]:
                 }
             )
 
-    message = "國際指標載入成功。"
+    message = "全球指數載入成功。"
     if failures:
-        message = "部分國際指標載入失敗：" + " | ".join(failures[:3])
+        message = "部分全球指數載入失敗：" + " | ".join(failures[:3])
 
     return {
         "ok": len(failures) < len(BENCHMARK_SYMBOLS),
@@ -272,8 +262,7 @@ class FugleRealtimeStore:
             return
 
         self.started = True
-        thread = threading.Thread(target=self._run, daemon=True)
-        thread.start()
+        threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self) -> None:
         try:
@@ -320,7 +309,6 @@ class FugleRealtimeStore:
         if isinstance(message, str):
             try:
                 import json
-
                 payload = json.loads(message)
             except Exception:
                 return
@@ -538,27 +526,29 @@ def get_raw_api_key() -> tuple[str | None, str]:
     return None, "未載入"
 
 
-def render_benchmark_section(benchmark_result: dict[str, Any]) -> None:
-    st.subheader("全球指標監測")
-    st.caption("此區為國際市場參考指標，使用 Yahoo Finance 公開行情，可能為延遲報價。")
+def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
+    st.markdown("---")
+    st.subheader("全球指數")
+    st.caption("國際市場參考，可能為延遲報價。")
 
-    items = benchmark_result.get("items", [])
-    first_row = st.columns(3)
-    second_row = st.columns(3)
-    columns = first_row + second_row
-
-    for idx, item in enumerate(items):
-        col = columns[idx]
-        price = "-" if item.get("price") is None else f"{item['price']:,.2f}"
+    for item in benchmark_result.get("items", []):
+        label = item.get("label", "-")
+        price = item.get("price")
         change = item.get("change")
         change_pct = item.get("change_pct")
-        if change is None or change_pct is None:
+        symbol = item.get("symbol", "-")
+        timestamp = item.get("time", "-")
+
+        if price is None:
+            price_text = "-"
             delta = "資料暫缺"
         else:
-            sign = "+" if change > 0 else ""
-            delta = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)"
-        col.metric(item["label"], price, delta=delta)
-        col.caption(f"{item.get('time', '-')} | {item['symbol']}")
+            sign = "+" if change is not None and change > 0 else ""
+            delta = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)" if change is not None and change_pct is not None else "-"
+            price_text = f"{price:,.2f}"
+
+        st.metric(label, price_text, delta=delta)
+        st.caption(f"{timestamp} | {symbol}")
 
     if benchmark_result.get("message"):
         st.caption(benchmark_result["message"])
@@ -580,6 +570,9 @@ raw_api_key, api_key_source = get_raw_api_key()
 api_key, api_key_note = normalize_fugle_api_key(raw_api_key)
 using_mock = not api_key or WebSocketClient is None
 benchmark_result = fetch_benchmark_data()
+
+with st.sidebar:
+    render_sidebar_benchmark_section(benchmark_result)
 
 if using_mock:
     st.warning("目前為示範模式。請在 Streamlit secrets 設定 FUGLE_API_KEY 後切換為即時行情。")
@@ -604,8 +597,6 @@ else:
     snapshots = store.snapshot(symbols)
     status = store.status()
     rest_result = test_rest_quote(api_key, symbols[0])
-
-render_benchmark_section(benchmark_result)
 
 status_cols = st.columns(6)
 status_cols[0].metric("模式", "即時" if not using_mock else "示範")
@@ -636,8 +627,7 @@ with st.expander("REST 測試"):
     st.write(f"測試結果：{'成功' if rest_result.get('ok') else '失敗'}")
     st.write(f"訊息：{rest_result.get('message')}")
     if rest_result.get("ok") and rest_result.get("data"):
-        quote_data = rest_result["data"]
-        st.json(quote_data)
+        st.json(rest_result["data"])
 
 tabs = st.tabs(symbols)
 for tab, symbol in zip(tabs, symbols):
@@ -648,10 +638,10 @@ for tab, symbol in zip(tabs, symbols):
         else:
             symbol_data = snapshots.get(symbol, {})
 
-        top_left, top_right = st.columns([1, 1])
-        with top_left:
+        left_col, right_col = st.columns([1, 1])
+        with left_col:
             render_order_book(symbol, symbol_data.get("book"))
-        with top_right:
+        with right_col:
             render_trade_summary(symbol, symbol_data.get("last_trade"))
         render_trade_tape(symbol_data.get("trades", []))
 
