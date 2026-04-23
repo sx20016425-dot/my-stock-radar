@@ -30,7 +30,7 @@ DEFAULT_SYMBOLS = ["2330", "2317"]
 MAX_RECENT_TRADES = 50
 UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
 BENCHMARK_SYMBOLS = [
-    {"label": "台指期參考", "symbol": "IX0126.TW", "note": "期貨指數參考"},
+    {"label": "台灣加權指數", "symbol": "^TWII", "note": "現貨指數參考"},
     {"label": "日經225", "symbol": "^N225", "note": "現貨指數參考"},
     {"label": "恆生指數", "symbol": "^HSI", "note": "現貨指數參考"},
     {"label": "韓國KOSPI", "symbol": "^KS11", "note": "現貨指數參考"},
