@@ -120,7 +120,7 @@ class FugleRealtimeStore:
         except Exception as exc:
             with self.lock:
                 self.connected = False
-                self.error_message = f"WebSocket startup failed: {exc}"
+                self.error_message = f"WebSocket 啟動失敗：{exc}"
 
     def _handle_connect(self) -> None:
         with self.lock:
@@ -130,17 +130,18 @@ class FugleRealtimeStore:
     def _handle_disconnect(self, code: Any, message: Any) -> None:
         with self.lock:
             self.connected = False
-            self.error_message = f"Disconnected: {code} {message}"
+            self.error_message = f"連線中斷：{code} {message}"
 
     def _handle_error(self, error: Any) -> None:
         with self.lock:
-            self.error_message = f"Market data error: {error}"
+            self.error_message = f"行情資料錯誤：{error}"
 
     def _handle_message(self, message: Any) -> None:
         payload = message
         if isinstance(message, str):
             try:
                 import json
+
                 payload = json.loads(message)
             except Exception:
                 return
@@ -176,7 +177,7 @@ class FugleRealtimeStore:
         if self.stock is None:
             with self.lock:
                 if not self.error_message:
-                    self.error_message = "WebSocket connection was not created in time."
+                    self.error_message = "WebSocket 連線逾時，尚未成功建立。"
             return
 
         for symbol in symbols:
@@ -217,9 +218,9 @@ def get_store(api_key: str | None) -> FugleRealtimeStore:
 
 
 def render_order_book(symbol: str, book: dict[str, Any] | None) -> None:
-    st.subheader(f"{symbol} Order Book")
+    st.subheader(f"{symbol} 五檔委買委賣")
     if not book:
-        st.info("No order-book data yet.")
+        st.info("尚未收到五檔資料。")
         return
 
     bids = book.get("bids", [])
@@ -230,45 +231,45 @@ def render_order_book(symbol: str, book: dict[str, Any] | None) -> None:
         ask = asks[idx] if idx < len(asks) else {}
         rows.append(
             {
-                "Bid Size": bid.get("size", ""),
-                "Bid Price": bid.get("price", ""),
-                "Ask Price": ask.get("price", ""),
-                "Ask Size": ask.get("size", ""),
+                "委買量": bid.get("size", ""),
+                "委買價": bid.get("price", ""),
+                "委賣價": ask.get("price", ""),
+                "委賣量": ask.get("size", ""),
             }
         )
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    st.caption(f"Updated at: {format_fugle_time(book.get('time'))}")
+    st.caption(f"更新時間：{format_fugle_time(book.get('time'))}")
 
 
 def render_trade_summary(symbol: str, trade: dict[str, Any] | None) -> None:
-    st.subheader(f"{symbol} Latest Trade")
+    st.subheader(f"{symbol} 最新成交")
     if not trade:
-        st.info("No trade data yet.")
+        st.info("尚未收到成交資料。")
         return
 
     cols = st.columns(4)
-    cols[0].metric("Price", trade.get("price", "-"))
-    cols[1].metric("Size", trade.get("size", "-"))
-    cols[2].metric("Volume", trade.get("volume", "-"))
-    cols[3].metric("Time", format_fugle_time(trade.get("time")))
+    cols[0].metric("成交價", trade.get("price", "-"))
+    cols[1].metric("成交量", trade.get("size", "-"))
+    cols[2].metric("累積量", trade.get("volume", "-"))
+    cols[3].metric("時間", format_fugle_time(trade.get("time")))
 
 
 def render_trade_tape(trades: list[dict[str, Any]]) -> None:
-    st.subheader("Trade Tape")
+    st.subheader("即時成交明細")
     if not trades:
-        st.info("No recent trades yet.")
+        st.info("尚未收到即時成交明細。")
         return
 
     trade_rows = list(trades)[:20]
     rows = [
         {
-            "Time": format_fugle_time(item.get("time")),
-            "Price": item.get("price"),
-            "Size": item.get("size"),
-            "Bid": item.get("bid"),
-            "Ask": item.get("ask"),
-            "Volume": item.get("volume"),
-            "Serial": item.get("serial"),
+            "時間": format_fugle_time(item.get("time")),
+            "成交價": item.get("price"),
+            "成交量": item.get("size"),
+            "買價": item.get("bid"),
+            "賣價": item.get("ask"),
+            "累積量": item.get("volume"),
+            "序號": item.get("serial"),
         }
         for item in trade_rows
     ]
@@ -281,27 +282,27 @@ def get_api_key() -> str | None:
     return os.getenv("FUGLE_API_KEY")
 
 
-st.set_page_config(page_title="TW Stock Live Dashboard", page_icon=":bar_chart:", layout="wide")
+st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
 
-st.title("TW Stock Live Dashboard")
-st.caption("A Streamlit dashboard for Taiwan stock five-level order book and live trade details.")
+st.title("台股即時監控台")
+st.caption("使用 Streamlit 製作的台股五檔委買委賣與即時成交明細監控頁面。")
 
 with st.sidebar:
-    st.header("Settings")
-    symbols_raw = st.text_input("Symbols", value=", ".join(DEFAULT_SYMBOLS), help="Comma-separated, for example: 2330, 2317")
+    st.header("監控設定")
+    symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
     symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
-    refresh_seconds = st.slider("Refresh every (sec)", min_value=1, max_value=10, value=1)
-    st.caption("Fugle free plans have subscription limits. Each symbol uses both books and trades channels.")
+    refresh_seconds = st.slider("刷新秒數", min_value=1, max_value=10, value=1)
+    st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。")
 
 api_key = get_api_key()
 using_mock = not api_key or WebSocketClient is None
 
 if using_mock:
-    st.warning("Running in demo mode. Add FUGLE_API_KEY to Streamlit secrets to switch to live market data.")
+    st.warning("目前為示範模式。請在 Streamlit secrets 設定 FUGLE_API_KEY 後切換為即時行情。")
     snapshots = build_mock_snapshot(symbols)
     status = {
         "connected": False,
-        "error_message": None if WebSocketClient is not None else "fugle-marketdata is not installed.",
+        "error_message": None if WebSocketClient is not None else "尚未安裝 fugle-marketdata 套件。",
         "last_event_at": now_taipei(),
         "subscriptions": 0,
     }
@@ -312,11 +313,11 @@ else:
     status = store.status()
 
 status_cols = st.columns(4)
-status_cols[0].metric("Mode", "Live" if not using_mock else "Demo")
-status_cols[1].metric("Connection", "Connected" if status["connected"] else "Disconnected")
-status_cols[2].metric("Subscriptions", status["subscriptions"])
+status_cols[0].metric("模式", "即時" if not using_mock else "示範")
+status_cols[1].metric("連線", "已連線" if status["connected"] else "未連線")
+status_cols[2].metric("訂閱數", status["subscriptions"])
 status_cols[3].metric(
-    "Last Event",
+    "最後事件",
     status["last_event_at"].strftime("%H:%M:%S") if status["last_event_at"] else "-",
 )
 
@@ -345,11 +346,11 @@ def live_dashboard() -> None:
 
 live_dashboard()
 
-with st.expander("Deployment Notes"):
+with st.expander("部署說明"):
     st.markdown(
         """
-        - This app uses the official `fugle-marketdata` Python SDK for live Taiwan stock data.
-        - GitHub is used for source control, and Streamlit Community Cloud can deploy directly from the repo.
-        - If you plan to share this publicly, confirm that your market-data usage is compliant with the vendor's license terms.
+        - 本系統使用官方 `fugle-marketdata` Python SDK 串接台股即時行情。
+        - 原始碼可放在 GitHub，並由 Streamlit Community Cloud 直接部署。
+        - 若你要對外公開此服務，請先確認行情資料的授權與使用規範是否符合需求。
         """
     )
