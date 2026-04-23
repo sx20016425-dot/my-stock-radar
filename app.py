@@ -28,9 +28,11 @@ except ImportError:
 TAIPEI_TZ = zoneinfo.ZoneInfo("Asia/Taipei")
 DEFAULT_SYMBOLS = ["2330", "2317"]
 MAX_RECENT_TRADES = 50
-MAX_BOOK_HISTORY = 240
-MAX_SIGNAL_EVENTS = 80
+MAX_BOOK_HISTORY = 300
+MAX_TRADE_HISTORY = 2000
+MAX_SIGNAL_EVENTS = 100
 UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
+
 BENCHMARK_SYMBOLS = [
     {"label": "台灣加權指數", "symbol": "^TWII", "note": "現貨指數參考"},
     {"label": "日經225", "symbol": "^N225", "note": "現貨指數參考"},
@@ -187,6 +189,7 @@ def fetch_benchmark_data() -> dict[str, Any]:
                 raise ValueError("查無價格資料")
 
             last_price = float(close_series.iloc[-1])
+
             previous_close = None
             fast_info = getattr(ticker, "fast_info", None)
             if fast_info:
@@ -228,11 +231,7 @@ def fetch_benchmark_data() -> dict[str, Any]:
     if failures:
         message = "部分全球指數參考載入失敗：" + " | ".join(failures[:3])
 
-    return {
-        "ok": len(failures) < len(BENCHMARK_SYMBOLS),
-        "message": message,
-        "items": items,
-    }
+    return {"ok": len(failures) < len(BENCHMARK_SYMBOLS), "message": message, "items": items}
 
 
 def book_totals(levels: list[dict[str, Any]]) -> tuple[float, int]:
@@ -306,7 +305,7 @@ class SymbolState:
     last_trade: dict[str, Any] | None = None
     trades: deque = field(default_factory=lambda: deque(maxlen=MAX_RECENT_TRADES))
     book_history: deque = field(default_factory=lambda: deque(maxlen=MAX_BOOK_HISTORY))
-    trade_history: deque = field(default_factory=lambda: deque(maxlen=MAX_BOOK_HISTORY))
+    trade_history: deque = field(default_factory=lambda: deque(maxlen=MAX_TRADE_HISTORY))
     signal_events: deque = field(default_factory=lambda: deque(maxlen=MAX_SIGNAL_EVENTS))
     signal_cooldowns: dict[str, float] = field(default_factory=dict)
     last_processed_trade_serial: Any = None
@@ -753,7 +752,7 @@ def calc_symbol_signal_score(symbol_data: dict[str, Any], index_events: list[Sig
         elif event.side == "賣盤":
             score -= event.score
             reasons.append(event.message)
-        elif event.side == "開盤":
+        else:
             reasons.append(event.message)
 
     open_trade = symbol_data.get("open_trade")
@@ -920,8 +919,25 @@ def render_decision_panel(symbol: str, symbol_data: dict[str, Any], index_events
         st.info("目前資料不足，尚未形成明確的多空觀察結論。")
         return
 
-    reason_rows = [{"說明": reason} for reason in reasons]
-    st.dataframe(pd.DataFrame(reason_rows), width="stretch", hide_index=True)
+    st.dataframe(pd.DataFrame([{"說明": r} for r in reasons]), width="stretch", hide_index=True)
+
+
+def render_tick_record_panel(symbol: str, trade_history: list[dict[str, Any]]) -> None:
+    st.subheader(f"{symbol} 開盤逐筆記錄")
+    if not trade_history:
+        st.info("尚未開始累積逐筆成交紀錄。")
+        return
+
+    rows = [
+        {
+            "時間": format_fugle_time(item.get("time")),
+            "成交價": item.get("price"),
+            "成交量": item.get("size"),
+            "序號": item.get("serial"),
+        }
+        for item in trade_history[:50]
+    ]
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def get_raw_api_key() -> tuple[str | None, str]:
@@ -1027,7 +1043,7 @@ def render_index_signal_panel(index_events: list[SignalEvent]) -> None:
 st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
 
 st.title("台股即時監控台")
-st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交與異常訊號監控頁面。")
+st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、開盤追蹤與異常訊號監控頁面。")
 
 with st.sidebar:
     st.header("監控設定")
@@ -1129,6 +1145,8 @@ for tab, symbol in zip(tabs, symbols):
             render_opening_panel(symbol, symbol_data)
         with bottom_right:
             render_decision_panel(symbol, symbol_data, index_signal_events)
+
+        render_tick_record_panel(symbol, symbol_data.get("trade_history", []))
 
 if refresh_seconds > 0:
     time.sleep(refresh_seconds)
