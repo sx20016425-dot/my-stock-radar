@@ -1,4 +1,5 @@
-streamlit-autorefresh
-yfinance
 pandas
+yfinance
 requests
+streamlit
+openpyxl
