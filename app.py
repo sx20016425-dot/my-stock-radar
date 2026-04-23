@@ -349,12 +349,12 @@ else:
 
 status_cols = st.columns(5)
 status_cols[0].metric("模式", "即時" if not using_mock else "示範")
-status_cols[1].metric("連線", "已連線" if status["connected"] else "未連線")
-status_cols[2].metric("已訂閱", status["subscriptions"])
-status_cols[3].metric("待訂閱", status["pending_subscriptions"])
+status_cols[1].metric("連線", "已連線" if status.get("connected") else "未連線")
+status_cols[2].metric("已訂閱", status.get("subscriptions", 0))
+status_cols[3].metric("待訂閱", status.get("pending_subscriptions", 0))
 status_cols[4].metric(
     "最後事件",
-    status["last_event_at"].strftime("%H:%M:%S") if status["last_event_at"] else "-",
+    status["last_event_at"].strftime("%H:%M:%S") if status.get("last_event_at") else "-",
 )
 
 if status.get("error_message"):
