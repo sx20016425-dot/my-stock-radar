@@ -1,5 +1,3 @@
-pandas
-yfinance
-requests
 streamlit
-openpyxl
+pandas
+requests
