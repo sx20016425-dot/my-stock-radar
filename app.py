@@ -91,8 +91,10 @@ class FugleRealtimeStore:
     def __init__(self, api_key: str | None):
         self.api_key = api_key
         self.lock = threading.Lock()
+        self.connection_ready = threading.Event()
         self.states: dict[str, SymbolState] = defaultdict(SymbolState)
         self.subscriptions: set[tuple[str, str]] = set()
+        self.pending_subscriptions: set[tuple[str, str]] = set()
         self.started = False
         self.connected = False
         self.error_message: str | None = None
@@ -121,16 +123,20 @@ class FugleRealtimeStore:
             with self.lock:
                 self.connected = False
                 self.error_message = f"WebSocket 啟動失敗：{exc}"
+            self.connection_ready.clear()
 
     def _handle_connect(self) -> None:
         with self.lock:
             self.connected = True
             self.error_message = None
+        self.connection_ready.set()
+        self._flush_pending_subscriptions()
 
     def _handle_disconnect(self, code: Any, message: Any) -> None:
         with self.lock:
             self.connected = False
             self.error_message = f"連線中斷：{code} {message}"
+        self.connection_ready.clear()
 
     def _handle_error(self, error: Any) -> None:
         with self.lock:
@@ -165,28 +171,55 @@ class FugleRealtimeStore:
                 state.last_trade = data
                 state.trades.appendleft(data)
 
+    def _safe_subscribe(self, channel: str, symbol: str) -> bool:
+        if self.stock is None:
+            return False
+
+        try:
+            self.stock.subscribe({"channel": channel, "symbol": symbol})
+            return True
+        except Exception as exc:
+            with self.lock:
+                self.connected = False
+                self.error_message = f"訂閱失敗：{channel} {symbol} - {exc}"
+            self.connection_ready.clear()
+            return False
+
+    def _flush_pending_subscriptions(self) -> None:
+        with self.lock:
+            pending_items = list(self.pending_subscriptions)
+
+        for channel, symbol in pending_items:
+            if self._safe_subscribe(channel, symbol):
+                with self.lock:
+                    self.pending_subscriptions.discard((channel, symbol))
+                    self.subscriptions.add((channel, symbol))
+            else:
+                break
+
     def subscribe_symbols(self, symbols: list[str]) -> None:
         if not self.api_key or WebSocketClient is None:
             return
 
         self.ensure_started()
-        wait_deadline = time.time() + 10
-        while self.stock is None and time.time() < wait_deadline:
-            time.sleep(0.1)
-
-        if self.stock is None:
-            with self.lock:
-                if not self.error_message:
-                    self.error_message = "WebSocket 連線逾時，尚未成功建立。"
-            return
-
         for symbol in symbols:
             for channel in ("books", "trades"):
                 key = (channel, symbol)
-                if key in self.subscriptions:
-                    continue
-                self.stock.subscribe({"channel": channel, "symbol": symbol})
-                self.subscriptions.add(key)
+                with self.lock:
+                    if key in self.subscriptions:
+                        continue
+                    self.pending_subscriptions.add(key)
+
+        if self.stock is None:
+            return
+
+        if not self.connection_ready.wait(timeout=0.5):
+            with self.lock:
+                if self.error_message is None:
+                    self.error_message = "正在建立 WebSocket 連線，請稍候。"
+            return
+
+        self._flush_pending_subscriptions()
 
     def snapshot(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
         with self.lock:
@@ -207,6 +240,7 @@ class FugleRealtimeStore:
                 "error_message": self.error_message,
                 "last_event_at": self.last_event_at,
                 "subscriptions": len(self.subscriptions),
+                "pending_subscriptions": len(self.pending_subscriptions),
             }
 
 
@@ -305,6 +339,7 @@ if using_mock:
         "error_message": None if WebSocketClient is not None else "尚未安裝 fugle-marketdata 套件。",
         "last_event_at": now_taipei(),
         "subscriptions": 0,
+        "pending_subscriptions": 0,
     }
 else:
     store = get_store(api_key)
@@ -312,11 +347,12 @@ else:
     snapshots = store.snapshot(symbols)
     status = store.status()
 
-status_cols = st.columns(4)
+status_cols = st.columns(5)
 status_cols[0].metric("模式", "即時" if not using_mock else "示範")
 status_cols[1].metric("連線", "已連線" if status["connected"] else "未連線")
-status_cols[2].metric("訂閱數", status["subscriptions"])
-status_cols[3].metric(
+status_cols[2].metric("已訂閱", status["subscriptions"])
+status_cols[3].metric("待訂閱", status["pending_subscriptions"])
+status_cols[4].metric(
     "最後事件",
     status["last_event_at"].strftime("%H:%M:%S") if status["last_event_at"] else "-",
 )
