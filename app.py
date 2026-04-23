@@ -1,4 +1,7 @@
+import base64
+import binascii
 import os
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -11,14 +14,16 @@ import pandas as pd
 import streamlit as st
 
 try:
-    from fugle_marketdata import WebSocketClient
+    from fugle_marketdata import RestClient, WebSocketClient
 except ImportError:
+    RestClient = None
     WebSocketClient = None
 
 
 TAIPEI_TZ = zoneinfo.ZoneInfo("Asia/Taipei")
 DEFAULT_SYMBOLS = ["2330", "2317"]
 MAX_RECENT_TRADES = 50
+UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
 
 
 def now_taipei() -> datetime:
@@ -43,6 +48,30 @@ def format_fugle_time(value: Any) -> str:
 def normalize_symbols(raw: str) -> list[str]:
     parts = [item.strip() for item in raw.replace(";", ",").split(",")]
     return [item for item in parts if item]
+
+
+def mask_secret(value: str | None) -> str:
+    if not value:
+        return "未提供"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def normalize_fugle_api_key(raw_key: str | None) -> tuple[str | None, str]:
+    if not raw_key:
+        return None, "未提供 API key"
+
+    raw_key = raw_key.strip()
+    try:
+        decoded = base64.b64decode(raw_key, validate=True).decode("utf-8").strip()
+    except (binascii.Error, UnicodeDecodeError):
+        return raw_key, "使用原始 API key"
+
+    if UUID_PAIR_PATTERN.match(decoded):
+        return decoded, "偵測到 Base64 包裝格式，已自動解碼後使用"
+
+    return raw_key, "使用原始 API key"
 
 
 def build_mock_snapshot(symbols: list[str]) -> dict[str, dict[str, Any]]:
@@ -80,6 +109,32 @@ def build_mock_snapshot(symbols: list[str]) -> dict[str, dict[str, Any]]:
     return snapshots
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def test_rest_quote(api_key: str, symbol: str) -> dict[str, Any]:
+    if RestClient is None:
+        return {
+            "ok": False,
+            "message": "RestClient 不可用，fugle-marketdata 套件可能未正確安裝。",
+            "data": None,
+        }
+
+    try:
+        client = RestClient(api_key=api_key)
+        stock = client.stock
+        quote = stock.intraday.quote(symbol=symbol)
+        return {
+            "ok": True,
+            "message": f"REST 測試成功：已取得 {symbol} 報價。",
+            "data": quote,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"REST 測試失敗：{exc}",
+            "data": None,
+        }
+
+
 @dataclass
 class SymbolState:
     book: dict[str, Any] | None = None
@@ -92,13 +147,16 @@ class FugleRealtimeStore:
         self.api_key = api_key
         self.lock = threading.Lock()
         self.connection_ready = threading.Event()
+        self.auth_ready = threading.Event()
         self.states: dict[str, SymbolState] = defaultdict(SymbolState)
         self.subscriptions: set[tuple[str, str]] = set()
         self.pending_subscriptions: set[tuple[str, str]] = set()
         self.started = False
         self.connected = False
+        self.authenticated = False
         self.error_message: str | None = None
         self.last_event_at: datetime | None = None
+        self.last_status_message: str | None = None
         self.client = None
         self.stock = None
 
@@ -122,37 +180,71 @@ class FugleRealtimeStore:
         except Exception as exc:
             with self.lock:
                 self.connected = False
+                self.authenticated = False
                 self.error_message = f"WebSocket 啟動失敗：{exc}"
+                self.last_status_message = "WebSocket 啟動例外"
             self.connection_ready.clear()
+            self.auth_ready.clear()
 
     def _handle_connect(self) -> None:
         with self.lock:
             self.connected = True
-            self.error_message = None
+            self.last_status_message = "WebSocket 已建立，等待驗證"
+            if self.error_message == "正在建立 WebSocket 連線，請稍候。":
+                self.error_message = None
         self.connection_ready.set()
-        self._flush_pending_subscriptions()
 
     def _handle_disconnect(self, code: Any, message: Any) -> None:
         with self.lock:
             self.connected = False
+            self.authenticated = False
             self.error_message = f"連線中斷：{code} {message}"
+            self.last_status_message = "WebSocket 已中斷"
         self.connection_ready.clear()
+        self.auth_ready.clear()
 
     def _handle_error(self, error: Any) -> None:
         with self.lock:
             self.error_message = f"行情資料錯誤：{error}"
+            self.last_status_message = "收到 error 事件"
 
     def _handle_message(self, message: Any) -> None:
         payload = message
         if isinstance(message, str):
             try:
                 import json
-
                 payload = json.loads(message)
             except Exception:
                 return
 
         event = payload.get("event")
+
+        if event == "authenticated":
+            with self.lock:
+                self.authenticated = True
+                self.error_message = None
+                self.last_status_message = "API key 驗證成功"
+            self.auth_ready.set()
+            self._flush_pending_subscriptions()
+            return
+
+        if event == "heartbeat":
+            with self.lock:
+                self.last_event_at = now_taipei()
+                self.last_status_message = "收到 heartbeat"
+            return
+
+        if event == "error":
+            error_data = payload.get("data", {})
+            error_message = error_data.get("message") or str(error_data) or "未知錯誤"
+            with self.lock:
+                self.error_message = f"Fugle 驗證或訂閱錯誤：{error_message}"
+                self.last_status_message = "收到 error 事件"
+                if "Invalid authentication credentials" in error_message:
+                    self.authenticated = False
+            self.auth_ready.clear()
+            return
+
         if event != "data":
             return
 
@@ -165,6 +257,7 @@ class FugleRealtimeStore:
         with self.lock:
             state = self.states[symbol]
             self.last_event_at = now_taipei()
+            self.last_status_message = f"收到 {channel} 資料"
             if channel == "books":
                 state.book = data
             elif channel == "trades":
@@ -182,11 +275,15 @@ class FugleRealtimeStore:
             with self.lock:
                 self.connected = False
                 self.error_message = f"訂閱失敗：{channel} {symbol} - {exc}"
+                self.last_status_message = "送出訂閱時發生例外"
             self.connection_ready.clear()
+            self.auth_ready.clear()
             return False
 
     def _flush_pending_subscriptions(self) -> None:
         with self.lock:
+            if not self.connected or not self.authenticated:
+                return
             pending_items = list(self.pending_subscriptions)
 
         for channel, symbol in pending_items:
@@ -211,12 +308,24 @@ class FugleRealtimeStore:
                     self.pending_subscriptions.add(key)
 
         if self.stock is None:
+            with self.lock:
+                if self.error_message is None:
+                    self.error_message = "正在初始化 Fugle SDK，請稍候。"
+                    self.last_status_message = "等待 SDK 建立 stock client"
             return
 
-        if not self.connection_ready.wait(timeout=0.5):
+        if not self.connection_ready.wait(timeout=1.0):
             with self.lock:
                 if self.error_message is None:
                     self.error_message = "正在建立 WebSocket 連線，請稍候。"
+                    self.last_status_message = "等待 WebSocket connect"
+            return
+
+        if not self.auth_ready.wait(timeout=2.0):
+            with self.lock:
+                if self.error_message is None:
+                    self.error_message = "WebSocket 已連線，但尚未完成 API 驗證。"
+                    self.last_status_message = "等待 authenticated 事件"
             return
 
         self._flush_pending_subscriptions()
@@ -237,8 +346,10 @@ class FugleRealtimeStore:
         with self.lock:
             return {
                 "connected": self.connected,
+                "authenticated": self.authenticated,
                 "error_message": self.error_message,
                 "last_event_at": self.last_event_at,
+                "last_status_message": self.last_status_message,
                 "subscriptions": len(self.subscriptions),
                 "pending_subscriptions": len(self.pending_subscriptions),
             }
@@ -271,7 +382,7 @@ def render_order_book(symbol: str, book: dict[str, Any] | None) -> None:
                 "委賣量": ask.get("size", ""),
             }
         )
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     st.caption(f"更新時間：{format_fugle_time(book.get('time'))}")
 
 
@@ -307,13 +418,16 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
         }
         for item in trade_rows
     ]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
-def get_api_key() -> str | None:
+def get_raw_api_key() -> tuple[str | None, str]:
     if "FUGLE_API_KEY" in st.secrets:
-        return st.secrets["FUGLE_API_KEY"]
-    return os.getenv("FUGLE_API_KEY")
+        return st.secrets["FUGLE_API_KEY"], "Streamlit secrets"
+    env_value = os.getenv("FUGLE_API_KEY")
+    if env_value:
+        return env_value, "環境變數"
+    return None, "未載入"
 
 
 st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
@@ -328,7 +442,8 @@ with st.sidebar:
     refresh_seconds = st.slider("刷新秒數", min_value=1, max_value=10, value=1)
     st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。")
 
-api_key = get_api_key()
+raw_api_key, api_key_source = get_raw_api_key()
+api_key, api_key_note = normalize_fugle_api_key(raw_api_key)
 using_mock = not api_key or WebSocketClient is None
 
 if using_mock:
@@ -336,23 +451,32 @@ if using_mock:
     snapshots = build_mock_snapshot(symbols)
     status = {
         "connected": False,
+        "authenticated": False,
         "error_message": None if WebSocketClient is not None else "尚未安裝 fugle-marketdata 套件。",
         "last_event_at": now_taipei(),
+        "last_status_message": "示範模式",
         "subscriptions": 0,
         "pending_subscriptions": 0,
+    }
+    rest_result = {
+        "ok": False,
+        "message": "示範模式下不執行 REST 測試。",
+        "data": None,
     }
 else:
     store = get_store(api_key)
     store.subscribe_symbols(symbols)
     snapshots = store.snapshot(symbols)
     status = store.status()
+    rest_result = test_rest_quote(api_key, symbols[0])
 
-status_cols = st.columns(5)
+status_cols = st.columns(6)
 status_cols[0].metric("模式", "即時" if not using_mock else "示範")
 status_cols[1].metric("連線", "已連線" if status.get("connected") else "未連線")
-status_cols[2].metric("已訂閱", status.get("subscriptions", 0))
-status_cols[3].metric("待訂閱", status.get("pending_subscriptions", 0))
-status_cols[4].metric(
+status_cols[2].metric("驗證", "成功" if status.get("authenticated") else "未完成")
+status_cols[3].metric("已訂閱", status.get("subscriptions", 0))
+status_cols[4].metric("待訂閱", status.get("pending_subscriptions", 0))
+status_cols[5].metric(
     "最後事件",
     status["last_event_at"].strftime("%H:%M:%S") if status.get("last_event_at") else "-",
 )
@@ -360,27 +484,43 @@ status_cols[4].metric(
 if status.get("error_message"):
     st.error(status["error_message"])
 
+with st.expander("連線診斷"):
+    st.write(f"API key 來源：{api_key_source}")
+    st.write(f"API key 狀態：{mask_secret(raw_api_key)}")
+    st.write(f"API key 處理：{api_key_note}")
+    st.write(f"目前模式：{'即時' if not using_mock else '示範'}")
+    st.write(f"連線狀態：{'已連線' if status.get('connected') else '未連線'}")
+    st.write(f"驗證狀態：{'成功' if status.get('authenticated') else '未完成'}")
+    st.write(f"狀態訊息：{status.get('last_status_message') or '-'}")
+    st.write(f"錯誤訊息：{status.get('error_message') or '-'}")
 
-@st.fragment(run_every=refresh_seconds)
-def live_dashboard() -> None:
-    tabs = st.tabs(symbols)
-    for tab, symbol in zip(tabs, symbols):
-        with tab:
-            if not using_mock:
-                current_snapshots = store.snapshot([symbol])
-                symbol_data = current_snapshots.get(symbol, {})
-            else:
-                symbol_data = snapshots.get(symbol, {})
+with st.expander("REST 測試"):
+    st.write(f"測試標的：{symbols[0] if symbols else DEFAULT_SYMBOLS[0]}")
+    st.write(f"測試結果：{'成功' if rest_result.get('ok') else '失敗'}")
+    st.write(f"訊息：{rest_result.get('message')}")
+    if rest_result.get("ok") and rest_result.get("data"):
+        quote_data = rest_result["data"]
+        st.json(quote_data)
 
-            top_left, top_right = st.columns([1, 1])
-            with top_left:
-                render_order_book(symbol, symbol_data.get("book"))
-            with top_right:
-                render_trade_summary(symbol, symbol_data.get("last_trade"))
-            render_trade_tape(symbol_data.get("trades", []))
+tabs = st.tabs(symbols)
+for tab, symbol in zip(tabs, symbols):
+    with tab:
+        if not using_mock:
+            current_snapshots = store.snapshot([symbol])
+            symbol_data = current_snapshots.get(symbol, {})
+        else:
+            symbol_data = snapshots.get(symbol, {})
 
+        top_left, top_right = st.columns([1, 1])
+        with top_left:
+            render_order_book(symbol, symbol_data.get("book"))
+        with top_right:
+            render_trade_summary(symbol, symbol_data.get("last_trade"))
+        render_trade_tape(symbol_data.get("trades", []))
 
-live_dashboard()
+if refresh_seconds > 0:
+    time.sleep(refresh_seconds)
+    st.rerun()
 
 with st.expander("部署說明"):
     st.markdown(
