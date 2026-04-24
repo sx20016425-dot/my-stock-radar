@@ -1080,6 +1080,14 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
         render_empty_box("尚未收到即時成交明細。", tall=True)
         return
 
+    def fmt_price(value: Any) -> str:
+        if value in (None, ""):
+            return "-"
+        try:
+            return f"{float(value):.2f}"
+        except Exception:
+            return str(value)
+
     rows = []
     for item in list(trades)[:20]:
         bid = item.get("bid")
@@ -1094,9 +1102,9 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
         rows.append(
             {
                 "時間": format_fugle_time(item.get("time")),
-                "買價": bid,
-                "賣價": ask,
-                "成交價格": price,
+                "買價": fmt_price(bid),
+                "賣價": fmt_price(ask),
+                "成交價格": fmt_price(price),
                 "數量": item.get("size"),
                 "_side": side,
             }
