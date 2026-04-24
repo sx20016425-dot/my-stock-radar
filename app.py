@@ -1407,14 +1407,18 @@ for tab, symbol in zip(tabs, symbols):
         with st.container(border=True):
             render_signal_panel(symbol, symbol_data.get("signal_events", []))
 
-        row_one_left, row_one_right = st.columns([1, 1])
+        with st.container():
+            row_one_left, row_one_mid, row_one_right = st.columns([1.2, 1.2, 1.0])
 
-        with row_one_left:
-            with st.container(border=True):
-                render_order_book(symbol, symbol_data.get("book"))
-        with row_one_right:
-            with st.container(border=True):
-                render_trade_tape(symbol_data.get("trades", []))
+            with row_one_left:
+                with st.container(border=True):
+                    render_order_book(symbol, symbol_data.get("book"))
+            with row_one_mid:
+                with st.container(border=True):
+                    render_trade_tape(symbol_data.get("trades", []))
+            with row_one_right:
+                with st.container(border=True):
+                    render_decision_panel(symbol, symbol_data, index_signal_events)
 
         row_two_left, row_two_right = st.columns([1, 1])
         with row_two_left:
@@ -1424,13 +1428,8 @@ for tab, symbol in zip(tabs, symbols):
             with st.container(border=True):
                 render_opening_panel(symbol, symbol_data)
 
-        row_three_left, row_three_right = st.columns([1, 1])
-        with row_three_left:
-            with st.container(border=True):
-                render_book_summary(symbol_data.get("book_summary"))
-        with row_three_right:
-            with st.container(border=True):
-                render_decision_panel(symbol, symbol_data, index_signal_events)
+        with st.container(border=True):
+            render_book_summary(symbol_data.get("book_summary"))
 
 if refresh_seconds > 0:
     time.sleep(refresh_seconds)
