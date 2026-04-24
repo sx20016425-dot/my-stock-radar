@@ -1375,32 +1375,25 @@ for tab, symbol in zip(tabs, symbols):
             rest_snapshot = rest_snapshots.get(symbol, {})
             symbol_data = merge_symbol_snapshot(rest_snapshot, stream_snapshot)
 
-        top_left, top_right = st.columns([1, 1])
-        with top_left:
+        left_col, right_col = st.columns([1, 1])
+
+        with left_col:
             with st.container(border=True):
                 render_order_book(symbol, symbol_data.get("book"))
-        with top_right:
             with st.container(border=True):
                 render_trade_summary(symbol, symbol_data.get("last_trade"), symbol_data.get("quote_data"))
-
-        with st.container(border=True):
-            render_trade_tape(symbol_data.get("trades", []))
-
-        mid_left, mid_right = st.columns([1.3, 1])
-        with mid_left:
-            with st.container(border=True):
-                render_signal_panel(symbol, symbol_data.get("signal_events", []))
-        with mid_right:
             with st.container(border=True):
                 render_book_summary(symbol_data.get("book_summary"))
-
-        bottom_left, bottom_right = st.columns([1, 1])
-        with bottom_left:
             with st.container(border=True):
                 render_opening_panel(symbol, symbol_data)
-        with bottom_right:
             with st.container(border=True):
                 render_decision_panel(symbol, symbol_data, index_signal_events)
+
+        with right_col:
+            with st.container(border=True):
+                render_trade_tape(symbol_data.get("trades", []))
+            with st.container(border=True):
+                render_signal_panel(symbol, symbol_data.get("signal_events", []))
 
         with st.container(border=True):
             render_tick_record_panel(symbol, symbol_data.get("trade_history", []))
