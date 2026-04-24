@@ -1,5 +1,6 @@
 import base64
 import binascii
+import csv
 import os
 import re
 import threading
@@ -7,6 +8,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 import zoneinfo
 
@@ -34,6 +36,12 @@ MAX_SIGNAL_EVENTS = 100
 BENCHMARK_STALE_SECONDS = 300
 UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
 
+APP_DIR = Path(__file__).resolve().parent
+DATA_LOG_DIR = APP_DIR / "data_logs"
+TICK_LOG_DIR = DATA_LOG_DIR / "ticks"
+BOOK_LOG_DIR = DATA_LOG_DIR / "books"
+SIGNAL_LOG_DIR = DATA_LOG_DIR / "signals"
+
 BENCHMARK_SYMBOLS = [
     {"label": "台灣加權指數", "symbol": "^TWII", "note": "現貨指數參考"},
     {"label": "日經225", "symbol": "^N225", "note": "現貨指數參考"},
@@ -46,6 +54,25 @@ BENCHMARK_SYMBOLS = [
 
 def now_taipei() -> datetime:
     return datetime.now(TAIPEI_TZ)
+
+
+def today_taipei_str() -> str:
+    return now_taipei().strftime("%Y%m%d")
+
+
+def ensure_log_dirs() -> None:
+    for path in (DATA_LOG_DIR, TICK_LOG_DIR, BOOK_LOG_DIR, SIGNAL_LOG_DIR):
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def append_csv_row(path: Path, fieldnames: list[str], row: dict[str, Any]) -> None:
+    ensure_log_dirs()
+    file_exists = path.exists()
+    with path.open("a", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
 def format_fugle_time(value: Any) -> str:
@@ -165,6 +192,20 @@ def summarise_book(book: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def book_summary_to_log_row(symbol: str, summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "logged_at": now_taipei().strftime("%Y-%m-%d %H:%M:%S"),
+        "symbol": symbol,
+        "book_time": summary.get("time"),
+        "bid_total": summary.get("bid_total"),
+        "ask_total": summary.get("ask_total"),
+        "bid_near3_ratio": round(float(summary.get("bid_near3_ratio", 0.0)), 6),
+        "ask_near3_ratio": round(float(summary.get("ask_near3_ratio", 0.0)), 6),
+        "best_bid": summary.get("best_bid"),
+        "best_ask": summary.get("best_ask"),
+    }
+
+
 def classify_severity(score: float) -> str:
     if score >= 0.85:
         return "高"
@@ -223,6 +264,87 @@ class FugleRealtimeStore:
         self.last_status_message: str | None = None
         self.client = None
         self.stock = None
+        ensure_log_dirs()
+
+    def tick_log_path(self, symbol: str) -> Path:
+        return TICK_LOG_DIR / f"{today_taipei_str()}_{symbol}_ticks.csv"
+
+    def book_log_path(self, symbol: str) -> Path:
+        return BOOK_LOG_DIR / f"{today_taipei_str()}_{symbol}_books.csv"
+
+    def signal_log_path(self, symbol: str) -> Path:
+        return SIGNAL_LOG_DIR / f"{today_taipei_str()}_{symbol}_signals.csv"
+
+    def persist_trade_tick(self, symbol: str, trade: dict[str, Any]) -> None:
+        append_csv_row(
+            self.tick_log_path(symbol),
+            [
+                "logged_at",
+                "symbol",
+                "trade_time",
+                "price",
+                "size",
+                "bid",
+                "ask",
+                "volume",
+                "serial",
+            ],
+            {
+                "logged_at": now_taipei().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol,
+                "trade_time": trade.get("time"),
+                "price": trade.get("price"),
+                "size": trade.get("size"),
+                "bid": trade.get("bid"),
+                "ask": trade.get("ask"),
+                "volume": trade.get("volume"),
+                "serial": trade.get("serial"),
+            },
+        )
+
+    def persist_book_summary(self, symbol: str, summary: dict[str, Any]) -> None:
+        append_csv_row(
+            self.book_log_path(symbol),
+            [
+                "logged_at",
+                "symbol",
+                "book_time",
+                "bid_total",
+                "ask_total",
+                "bid_near3_ratio",
+                "ask_near3_ratio",
+                "best_bid",
+                "best_ask",
+            ],
+            book_summary_to_log_row(symbol, summary),
+        )
+
+    def persist_signal_event(self, symbol: str, event: SignalEvent) -> None:
+        append_csv_row(
+            self.signal_log_path(symbol),
+            [
+                "logged_at",
+                "symbol",
+                "event_time",
+                "event_type",
+                "side",
+                "score",
+                "severity",
+                "message",
+                "extra",
+            ],
+            {
+                "logged_at": now_taipei().strftime("%Y-%m-%d %H:%M:%S"),
+                "symbol": symbol,
+                "event_time": event.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "event_type": event.event_type,
+                "side": event.side,
+                "score": round(event.score, 4),
+                "severity": classify_severity(event.score),
+                "message": event.message,
+                "extra": str(event.extra),
+            },
+        )
 
     def ensure_started(self) -> None:
         if self.started or not self.api_key or WebSocketClient is None:
@@ -272,6 +394,7 @@ class FugleRealtimeStore:
 
     def _emit_signal(
         self,
+        symbol: str,
         state: SymbolState,
         event_type: str,
         side: str,
@@ -284,16 +407,17 @@ class FugleRealtimeStore:
         cooldown_key = f"{event_type}:{side}"
         if now_ts - state.signal_cooldowns.get(cooldown_key, 0) < cooldown_seconds:
             return
-        state.signal_cooldowns[cooldown_key] = now_ts
-        state.signal_events.appendleft(
-            SignalEvent(
-                event_type=event_type,
-                side=side,
-                message=message,
-                score=score,
-                extra=extra or {},
-            )
+
+        event = SignalEvent(
+            event_type=event_type,
+            side=side,
+            message=message,
+            score=score,
+            extra=extra or {},
         )
+        state.signal_cooldowns[cooldown_key] = now_ts
+        state.signal_events.appendleft(event)
+        self.persist_signal_event(symbol, event)
 
     def _analyse_order_book_change(self, symbol: str, state: SymbolState, current_trade: dict[str, Any] | None = None) -> None:
         if len(state.book_history) < 2:
@@ -308,6 +432,7 @@ class FugleRealtimeStore:
             if curr["bid_total"] >= prev["bid_total"] * 1.6 and bid_delta >= 500:
                 score = min(0.95, 0.55 + abs(bid_delta) / max(prev["bid_total"], 1))
                 self._emit_signal(
+                    symbol,
                     state,
                     "bid_stack_up",
                     "買盤",
@@ -318,6 +443,7 @@ class FugleRealtimeStore:
             if curr["bid_total"] <= prev["bid_total"] * 0.55 and abs(bid_delta) >= 500:
                 score = min(0.95, 0.55 + abs(bid_delta) / max(prev["bid_total"], 1))
                 self._emit_signal(
+                    symbol,
                     state,
                     "bid_pull",
                     "買盤",
@@ -330,6 +456,7 @@ class FugleRealtimeStore:
             if curr["ask_total"] >= prev["ask_total"] * 1.6 and ask_delta >= 500:
                 score = min(0.95, 0.55 + abs(ask_delta) / max(prev["ask_total"], 1))
                 self._emit_signal(
+                    symbol,
                     state,
                     "ask_stack_up",
                     "賣盤",
@@ -340,6 +467,7 @@ class FugleRealtimeStore:
             if curr["ask_total"] <= prev["ask_total"] * 0.55 and abs(ask_delta) >= 500:
                 score = min(0.95, 0.55 + abs(ask_delta) / max(prev["ask_total"], 1))
                 self._emit_signal(
+                    symbol,
                     state,
                     "ask_pull",
                     "賣盤",
@@ -353,6 +481,7 @@ class FugleRealtimeStore:
 
         if bid_ratio_jump >= 0.18 and curr["bid_near3_ratio"] >= 0.62:
             self._emit_signal(
+                symbol,
                 state,
                 "bid_front_loaded",
                 "買盤",
@@ -363,6 +492,7 @@ class FugleRealtimeStore:
 
         if ask_ratio_jump >= 0.18 and curr["ask_near3_ratio"] >= 0.62:
             self._emit_signal(
+                symbol,
                 state,
                 "ask_front_loaded",
                 "賣盤",
@@ -387,6 +517,7 @@ class FugleRealtimeStore:
             curr_size = curr["ask_map"].get(trade_price)
             if prev_size is not None and curr_size is not None and curr_size >= prev_size:
                 self._emit_signal(
+                    symbol,
                     state,
                     "ask_replenish_after_trade",
                     "賣盤",
@@ -400,6 +531,7 @@ class FugleRealtimeStore:
             curr_size = curr["bid_map"].get(trade_price)
             if prev_size is not None and curr_size is not None and curr_size >= prev_size:
                 self._emit_signal(
+                    symbol,
                     state,
                     "bid_replenish_after_trade",
                     "買盤",
@@ -416,6 +548,7 @@ class FugleRealtimeStore:
         if state.open_trade is None:
             state.open_trade = trade
             self._emit_signal(
+                symbol,
                 state,
                 "opening_trade",
                 "開盤",
@@ -485,6 +618,7 @@ class FugleRealtimeStore:
                 summary = summarise_book(data)
                 if summary:
                     state.book_history.append(summary)
+                    self.persist_book_summary(symbol, summary)
                     self._analyse_order_book_change(symbol, state, state.last_trade)
 
             elif channel == "trades":
@@ -501,6 +635,7 @@ class FugleRealtimeStore:
                             "serial": serial,
                         }
                     )
+                    self.persist_trade_tick(symbol, data)
                     self._update_opening_state(symbol, state, data)
                     self._analyse_order_book_change(symbol, state, data)
 
@@ -1058,6 +1193,31 @@ def render_tick_record_panel(symbol: str, trade_history: list[dict[str, Any]]) -
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
+def render_log_panel(symbols: list[str]) -> None:
+    st.subheader("資料落地紀錄")
+    st.caption(f"逐筆成交、五檔摘要與訊號會寫入：{DATA_LOG_DIR}")
+
+    rows: list[dict[str, Any]] = []
+    today = today_taipei_str()
+    for symbol in symbols:
+        tick_path = TICK_LOG_DIR / f"{today}_{symbol}_ticks.csv"
+        book_path = BOOK_LOG_DIR / f"{today}_{symbol}_books.csv"
+        signal_path = SIGNAL_LOG_DIR / f"{today}_{symbol}_signals.csv"
+        rows.append(
+            {
+                "股票": symbol,
+                "逐筆檔": str(tick_path.name),
+                "五檔檔": str(book_path.name),
+                "訊號檔": str(signal_path.name),
+                "逐筆已建立": "是" if tick_path.exists() else "否",
+                "五檔已建立": "是" if book_path.exists() else "否",
+                "訊號已建立": "是" if signal_path.exists() else "否",
+            }
+        )
+
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+
 def resolve_market_source(mode: str, api_key: str | None, symbols: list[str]) -> dict[str, Any]:
     if mode == "示範資料":
         return {
@@ -1153,7 +1313,7 @@ def resolve_market_source(mode: str, api_key: str | None, symbols: list[str]) ->
 st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
 
 st.title("台股即時監控台")
-st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、開盤追蹤與異常訊號監控頁面。")
+st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、開盤追蹤、異常訊號與盤中資料落地監控頁面。")
 
 with st.sidebar:
     st.header("監控設定")
@@ -1193,6 +1353,7 @@ if status.get("error_message"):
     st.error(status["error_message"])
 
 render_index_signal_panel(index_signal_events)
+render_log_panel(symbols)
 
 with st.expander("連線診斷"):
     st.write(f"API key 來源：{api_key_source}")
@@ -1206,6 +1367,7 @@ with st.expander("連線診斷"):
     st.write(f"狀態訊息：{status.get('last_status_message') or '-'}")
     st.write(f"錯誤訊息：{status.get('error_message') or '-'}")
     st.write(f"系統判斷：{market_state['diagnostic_note']}")
+    st.write(f"資料落地目錄：{DATA_LOG_DIR}")
 
 with st.expander("REST 測試"):
     st.write(f"測試標的：{symbols[0] if symbols else DEFAULT_SYMBOLS[0]}")
@@ -1253,6 +1415,7 @@ with st.expander("部署說明"):
         """
         - 本系統保留台股五檔、即時成交、開盤追蹤、異常訊號與全球指數參考面板。
         - 當 Fugle 驗證失敗時，系統會自動退回示範資料，避免整個頁面失效。
+        - 盤中逐筆成交、五檔摘要與異常訊號會同步寫入 `data_logs`，方便後續做 replay 與回測。
         - 全球指數區使用 Yahoo Finance 參考資料，可能為延遲報價，不建議直接作為交易依據。
         - 異常訊號屬規則式監控，適合盤中輔助判讀，不代表保證性的買賣建議。
         """
