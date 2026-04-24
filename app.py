@@ -112,7 +112,7 @@ def normalize_fugle_api_key(raw_key: str | None) -> tuple[str | None, str]:
         return raw_key, "使用原始 API key"
 
     if UUID_PAIR_PATTERN.match(decoded):
-        return decoded, "偵測到 Base64 包裝格式，已自動解碼後使用"
+        return raw_key, "偵測到 Base64 外觀，但依 Fugle 官方文件改為保留原始 API key，不先解碼"
 
     return raw_key, "使用原始 API key"
 
