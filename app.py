@@ -1375,6 +1375,9 @@ for tab, symbol in zip(tabs, symbols):
             rest_snapshot = rest_snapshots.get(symbol, {})
             symbol_data = merge_symbol_snapshot(rest_snapshot, stream_snapshot)
 
+        with st.container(border=True):
+            render_signal_panel(symbol, symbol_data.get("signal_events", []))
+
         left_col, right_col = st.columns([1, 1])
 
         with left_col:
@@ -1392,8 +1395,6 @@ for tab, symbol in zip(tabs, symbols):
         with right_col:
             with st.container(border=True):
                 render_trade_tape(symbol_data.get("trades", []))
-            with st.container(border=True):
-                render_signal_panel(symbol, symbol_data.get("signal_events", []))
 
         with st.container(border=True):
             render_tick_record_panel(symbol, symbol_data.get("trade_history", []))
