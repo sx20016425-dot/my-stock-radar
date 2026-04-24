@@ -54,15 +54,15 @@ OPEN_PANEL_HEIGHT = 180
 SUMMARY_PANEL_HEIGHT = 180
 
 BENCHMARK_SYMBOLS = [
-    {"label": "?啁???", "symbol": "^TWII", "note": "?曇疏???},
-    {"label": "?亦?225", "symbol": "^N225", "note": "?曇疏???},
-    {"label": "???", "symbol": "^HSI", "note": "?曇疏???},
-    {"label": "??KOSPI", "symbol": "^KS11", "note": "?曇疏???},
-    {"label": "????疏??, "symbol": "NQ=F", "note": "?疏??},
-    {"label": "璅?疏??, "symbol": "ES=F", "note": "?疏??},
+    {"label": "台灣加權指數", "symbol": "^TWII", "note": "現貨指數參考"},
+    {"label": "日經225", "symbol": "^N225", "note": "現貨指數參考"},
+    {"label": "恆生指數", "symbol": "^HSI", "note": "現貨指數參考"},
+    {"label": "韓國KOSPI", "symbol": "^KS11", "note": "現貨指數參考"},
+    {"label": "那指期貨參考", "symbol": "NQ=F", "note": "期貨參考"},
+    {"label": "標普期貨參考", "symbol": "ES=F", "note": "期貨參考"},
 ]
 
-LOGIN_HELP_TEXT = "隢撓?乩??貊??亙????撽????⊥??亦???鞈???
+LOGIN_HELP_TEXT = "請輸入你核發的登入序號。只有通過審核的序號才能進入監控頁。"
 
 
 def inject_custom_css() -> None:
@@ -186,13 +186,13 @@ def benchmark_age_seconds(value: Any) -> float | None:
 
 
 def normalize_symbols(raw: str) -> list[str]:
-    parts = [item.strip() for item in raw.replace(";", ",").replace("嚗?, ",").split(",")]
+    parts = [item.strip() for item in raw.replace(";", ",").replace("，", ",").split(",")]
     return [item for item in parts if item]
 
 
 def mask_secret(value: str | None) -> str:
     if not value:
-        return "?芣?靘?
+        return "未提供"
     if len(value) <= 8:
         return "*" * len(value)
     return f"{value[:4]}...{value[-4:]}"
@@ -200,18 +200,18 @@ def mask_secret(value: str | None) -> str:
 
 def normalize_fugle_api_key(raw_key: str | None) -> tuple[str | None, str]:
     if not raw_key:
-        return None, "?芣?靘?API key"
+        return None, "未提供 API key"
 
     raw_key = raw_key.strip()
     try:
         decoded = base64.b64decode(raw_key, validate=True).decode("utf-8").strip()
     except (binascii.Error, UnicodeDecodeError):
-        return raw_key, "雿輻?? API key"
+        return raw_key, "使用原始 API key"
 
     if UUID_PAIR_PATTERN.match(decoded):
-        return raw_key, "?菜葫??Base64 憭?嚗?靘?Fugle 摰?辣?寧靽??? API key嚗??圾蝣?
+        return raw_key, "偵測到 Base64 外觀，但依 Fugle 官方文件改為保留原始 API key，不先解碼"
 
-    return raw_key, "雿輻?? API key"
+    return raw_key, "使用原始 API key"
 
 
 def get_raw_api_key() -> tuple[str | None, str]:
@@ -219,13 +219,13 @@ def get_raw_api_key() -> tuple[str | None, str]:
         return st.secrets["FUGLE_API_KEY"], "Streamlit secrets"
     env_value = os.getenv("FUGLE_API_KEY")
     if env_value:
-        return env_value, "?啣?霈"
-    return None, "?芾???
+        return env_value, "環境變數"
+    return None, "未載入"
 
 
 def get_access_key_config() -> tuple[set[str], str]:
     raw = None
-    source = "?芾身摰?
+    source = "未設定"
     if "ACCESS_KEYS" in st.secrets:
         raw = st.secrets["ACCESS_KEYS"]
         source = "Streamlit secrets"
@@ -233,7 +233,7 @@ def get_access_key_config() -> tuple[set[str], str]:
         env_value = os.getenv("ACCESS_KEYS")
         if env_value:
             raw = env_value
-            source = "?啣?霈"
+            source = "環境變數"
 
     allowed_keys: set[str] = set()
     if isinstance(raw, (list, tuple)):
@@ -259,7 +259,7 @@ def get_access_key_config() -> tuple[set[str], str]:
 
 def get_admin_access_key_config() -> tuple[set[str], str]:
     raw = None
-    source = "?芾身摰?
+    source = "未設定"
     if "ADMIN_ACCESS_KEYS" in st.secrets:
         raw = st.secrets["ADMIN_ACCESS_KEYS"]
         source = "Streamlit secrets"
@@ -267,7 +267,7 @@ def get_admin_access_key_config() -> tuple[set[str], str]:
         env_value = os.getenv("ADMIN_ACCESS_KEYS")
         if env_value:
             raw = env_value
-            source = "?啣?霈"
+            source = "環境變數"
 
     admin_keys: set[str] = set()
     if isinstance(raw, (list, tuple)):
@@ -314,44 +314,17 @@ def logout() -> None:
 
 def render_login_gate() -> None:
     allowed_keys, source = get_access_key_config()
-    if not allowed_keys:
-        st.error("撠閮剖? ACCESS_KEYS嚗瘜??函?仿?霅?)
-        st.stop()
-
-    st.markdown('<div class="login-shell">', unsafe_allow_html=True)
-    st.title("?∠巨?琿??餃")
-    st.caption(LOGIN_HELP_TEXT)
-    with st.form("access_gate_form", clear_on_submit=False):
-        input_key = st.text_input("?餃摨?", type="password", placeholder="隢撓?亙祟?賊?????)
-        submitted = st.form_submit_button("?脣蝟餌絞", use_container_width=True)
-
-    if submitted:
-        cleaned = input_key.strip()
-        if cleaned in allowed_keys:
-            st.session_state["access_granted"] = True
-            st.session_state["access_key_value"] = cleaned
-            st.session_state["access_key_masked"] = mask_access_key(cleaned)
-            st.rerun()
-        else:
-            st.error("?餃摨??⊥?嚗?蝣箄??臬?箔??貊??????)
-
-    st.caption(f"摨?靘?嚗source}嚗??典??嚗len(allowed_keys)}")
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.stop()
-
-def render_login_gate() -> None:
-    allowed_keys, source = get_access_key_config()
     admin_keys, admin_source = get_admin_access_key_config()
     if not allowed_keys:
-        st.error("撠閮剖? ACCESS_KEYS嚗瘜??函?仿?霅?)
+        st.error("尚未設定 ACCESS_KEYS，無法啟用登入驗證。")
         st.stop()
 
     st.markdown('<div class="login-shell">', unsafe_allow_html=True)
-    st.title("?∠巨?琿??餃")
+    st.title("股票雷達登入")
     st.caption(LOGIN_HELP_TEXT)
     with st.form("access_gate_form", clear_on_submit=False):
-        input_key = st.text_input("?餃摨?", type="password", placeholder="隢撓?亙祟?賊?????)
-        submitted = st.form_submit_button("?脣蝟餌絞", use_container_width=True)
+        input_key = st.text_input("登入序號", type="password", placeholder="請輸入審核通過的序號")
+        submitted = st.form_submit_button("進入系統", use_container_width=True)
 
     if submitted:
         cleaned = input_key.strip()
@@ -368,11 +341,11 @@ def render_login_gate() -> None:
             st.session_state["access_role"] = "user"
             st.rerun()
         else:
-            st.error("?餃摨??⊥?嚗?蝣箄??臬?箔??貊??????)
+            st.error("登入序號無效，請確認是否為你核發的有效序號。")
 
-    st.caption(f"摨?靘?嚗source}嚗??典??嚗len(allowed_keys)}")
+    st.caption(f"序號來源：{source}，目前可用序號數：{len(allowed_keys)}")
     if admin_keys:
-        st.caption(f"蝞∠?摨?靘?嚗admin_source}嚗??函恣???嚗len(admin_keys)}")
+        st.caption(f"管理序號來源：{admin_source}，目前可用管理序號數：{len(admin_keys)}")
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
@@ -468,8 +441,8 @@ def build_snapshot_from_quote(symbol: str, quote_data: dict[str, Any] | None) ->
         signal_events.append(
             SignalEvent(
                 event_type="close_snapshot",
-                side="?嗥",
-                message=f"{symbol} ?桀?憿舐內?嗥敹怎嚗?銝剜?畾萄惇甇?虜?瘜?,
+                side="收盤",
+                message=f"{symbol} 目前顯示收盤快照，若非盤中時段屬正常狀況。",
                 score=0.35,
             )
         )
@@ -490,18 +463,18 @@ def build_snapshot_from_quote(symbol: str, quote_data: dict[str, Any] | None) ->
 
 def classify_severity(score: float) -> str:
     if score >= 0.85:
-        return "擃?
+        return "高"
     if score >= 0.6:
-        return "銝?
-    return "雿?
+        return "中"
+    return "低"
 
 
 def score_to_bias(score: float) -> str:
     if score >= 1.4:
-        return "??"
+        return "偏多"
     if score <= -1.4:
-        return "?征"
-    return "銝剜?
+        return "偏空"
+    return "中性"
 
 
 @dataclass
@@ -627,16 +600,16 @@ class FugleRealtimeStore:
             with self.lock:
                 self.connected = False
                 self.authenticated = False
-                self.error_message = f"WebSocket ??憭望?嚗exc}"
-                self.last_status_message = "WebSocket ??靘?"
+                self.error_message = f"WebSocket 啟動失敗：{exc}"
+                self.last_status_message = "WebSocket 啟動例外"
             self.connection_ready.clear()
             self.auth_ready.clear()
 
     def _handle_connect(self) -> None:
         with self.lock:
             self.connected = True
-            self.last_status_message = "WebSocket 撌脣遣蝡?蝑?撽?"
-            if self.error_message == "甇?撱箇? WebSocket ???嚗?蝔?:
+            self.last_status_message = "WebSocket 已建立，等待驗證"
+            if self.error_message == "正在建立 WebSocket 連線，請稍候。":
                 self.error_message = None
         self.connection_ready.set()
 
@@ -644,15 +617,15 @@ class FugleRealtimeStore:
         with self.lock:
             self.connected = False
             self.authenticated = False
-            self.error_message = f"???銝剜嚗code} {message}"
-            self.last_status_message = "WebSocket 撌脖葉??
+            self.error_message = f"連線中斷：{code} {message}"
+            self.last_status_message = "WebSocket 已中斷"
         self.connection_ready.clear()
         self.auth_ready.clear()
 
     def _handle_error(self, error: Any) -> None:
         with self.lock:
-            self.error_message = f"銵?鞈??航炊嚗error}"
-            self.last_status_message = "?嗅 error 鈭辣"
+            self.error_message = f"行情資料錯誤：{error}"
+            self.last_status_message = "收到 error 事件"
 
     def _emit_signal(
         self,
@@ -690,26 +663,26 @@ class FugleRealtimeStore:
         if prev["bid_total"] > 0:
             if curr["bid_total"] >= prev["bid_total"] * 1.6 and bid_delta >= 500:
                 score = min(0.95, 0.55 + abs(bid_delta) / max(prev["bid_total"], 1))
-                self._emit_signal(symbol, state, "bid_stack_up", "鞎瑞", f"{symbol} 鞎瑞鈭?蝮賡??啣虜憓? {int(bid_delta):,}嚗?隡澆????踵??, score, {"bid_delta": bid_delta})
+                self._emit_signal(symbol, state, "bid_stack_up", "買盤", f"{symbol} 買盤五檔總量異常增加 {int(bid_delta):,}，疑似堆量或承接。", score, {"bid_delta": bid_delta})
             if curr["bid_total"] <= prev["bid_total"] * 0.55 and abs(bid_delta) >= 500:
                 score = min(0.95, 0.55 + abs(bid_delta) / max(prev["bid_total"], 1))
-                self._emit_signal(symbol, state, "bid_pull", "鞎瑞", f"{symbol} 鞎瑞鈭?蝮賡?敹恍?撠?{int(abs(bid_delta)):,}嚗?隡潭?柴?, score, {"bid_delta": bid_delta})
+                self._emit_signal(symbol, state, "bid_pull", "買盤", f"{symbol} 買盤五檔總量快速減少 {int(abs(bid_delta)):,}，疑似抽單。", score, {"bid_delta": bid_delta})
 
         if prev["ask_total"] > 0:
             if curr["ask_total"] >= prev["ask_total"] * 1.6 and ask_delta >= 500:
                 score = min(0.95, 0.55 + abs(ask_delta) / max(prev["ask_total"], 1))
-                self._emit_signal(symbol, state, "ask_stack_up", "鞈?", f"{symbol} 鞈?鈭?蝮賡??啣虜憓? {int(ask_delta):,}嚗?隡澆??斗??柴?, score, {"ask_delta": ask_delta})
+                self._emit_signal(symbol, state, "ask_stack_up", "賣盤", f"{symbol} 賣盤五檔總量異常增加 {int(ask_delta):,}，疑似壓單掛出。", score, {"ask_delta": ask_delta})
             if curr["ask_total"] <= prev["ask_total"] * 0.55 and abs(ask_delta) >= 500:
                 score = min(0.95, 0.55 + abs(ask_delta) / max(prev["ask_total"], 1))
-                self._emit_signal(symbol, state, "ask_pull", "鞈?", f"{symbol} 鞈?鈭?蝮賡?敹恍?撠?{int(abs(ask_delta)):,}嚗?隡潭?柴?, score, {"ask_delta": ask_delta})
+                self._emit_signal(symbol, state, "ask_pull", "賣盤", f"{symbol} 賣盤五檔總量快速減少 {int(abs(ask_delta)):,}，疑似抽單。", score, {"ask_delta": ask_delta})
 
         bid_ratio_jump = curr["bid_near3_ratio"] - prev["bid_near3_ratio"]
         ask_ratio_jump = curr["ask_near3_ratio"] - prev["ask_near3_ratio"]
 
         if bid_ratio_jump >= 0.18 and curr["bid_near3_ratio"] >= 0.62:
-            self._emit_signal(symbol, state, "bid_front_loaded", "鞎瑞", f"{symbol} 鞎瑞??瑼?瘥?擃 {curr['bid_near3_ratio']:.0%}嚗??寞?交?憿舫?銝准?, min(0.9, 0.45 + bid_ratio_jump * 2), {"bid_near3_ratio": curr["bid_near3_ratio"]})
+            self._emit_signal(symbol, state, "bid_front_loaded", "買盤", f"{symbol} 買盤前三檔占比提高到 {curr['bid_near3_ratio']:.0%}，近價承接明顯集中。", min(0.9, 0.45 + bid_ratio_jump * 2), {"bid_near3_ratio": curr["bid_near3_ratio"]})
         if ask_ratio_jump >= 0.18 and curr["ask_near3_ratio"] >= 0.62:
-            self._emit_signal(symbol, state, "ask_front_loaded", "鞈?", f"{symbol} 鞈???瑼?瘥?擃 {curr['ask_near3_ratio']:.0%}嚗??寡都憯?銝准?, min(0.9, 0.45 + ask_ratio_jump * 2), {"ask_near3_ratio": curr["ask_near3_ratio"]})
+            self._emit_signal(symbol, state, "ask_front_loaded", "賣盤", f"{symbol} 賣盤前三檔占比提高到 {curr['ask_near3_ratio']:.0%}，近價賣壓集中。", min(0.9, 0.45 + ask_ratio_jump * 2), {"ask_near3_ratio": curr["ask_near3_ratio"]})
 
         for idx in range(TOP_LEVEL_MONITOR_COUNT):
             prev_bid_size = int(prev["bid_map"].get(safe_float(current_bids[idx].get("price")) if idx < len(current_bids) else None, 0))
@@ -724,20 +697,20 @@ class FugleRealtimeStore:
                         symbol,
                         state,
                         f"bid_level_{idx + 1}_stack_up",
-                        "鞎瑞",
-                        f"{symbol} 鞎暍idx + 1} ({curr_bid_price}) ??????{bid_level_delta:,}嚗?隡潮?????,
+                        "買盤",
+                        f"{symbol} 買{idx + 1} ({curr_bid_price}) 掛單量突然增加 {bid_level_delta:,}。",
                         min(0.95, 0.5 + abs(bid_level_delta) / max(prev_bid_size, 1)),
-                        {"level": f"鞎暍idx + 1}", "price": curr_bid_price, "delta": bid_level_delta},
+                        {"level": f"買{idx + 1}", "price": curr_bid_price, "delta": bid_level_delta},
                     )
                 if prev_bid_size >= LEVEL_ABS_DELTA_THRESHOLD and curr_bid_size <= prev_bid_size * LEVEL_RATIO_DOWN_THRESHOLD and abs(bid_level_delta) >= LEVEL_ABS_DELTA_THRESHOLD:
                     self._emit_signal(
                         symbol,
                         state,
                         f"bid_level_{idx + 1}_pull",
-                        "鞎瑞",
-                        f"{symbol} 鞎暍idx + 1} ({curr_bid_price}) ??翰??撠?{abs(bid_level_delta):,}嚗?隡潮??賢??,
+                        "買盤",
+                        f"{symbol} 買{idx + 1} ({curr_bid_price}) 掛單量快速抽離 {abs(bid_level_delta):,}。",
                         min(0.95, 0.5 + abs(bid_level_delta) / max(prev_bid_size, 1)),
-                        {"level": f"鞎暍idx + 1}", "price": curr_bid_price, "delta": bid_level_delta},
+                        {"level": f"買{idx + 1}", "price": curr_bid_price, "delta": bid_level_delta},
                     )
 
             prev_ask_size = int(prev["ask_map"].get(safe_float(current_asks[idx].get("price")) if idx < len(current_asks) else None, 0))
@@ -752,20 +725,20 @@ class FugleRealtimeStore:
                         symbol,
                         state,
                         f"ask_level_{idx + 1}_stack_up",
-                        "鞈?",
-                        f"{symbol} 鞈ㄌidx + 1} ({curr_ask_price}) ??????{ask_level_delta:,}嚗?隡潮?憯??,
+                        "賣盤",
+                        f"{symbol} 賣{idx + 1} ({curr_ask_price}) 掛單量突然增加 {ask_level_delta:,}。",
                         min(0.95, 0.5 + abs(ask_level_delta) / max(prev_ask_size, 1)),
-                        {"level": f"鞈ㄌidx + 1}", "price": curr_ask_price, "delta": ask_level_delta},
+                        {"level": f"賣{idx + 1}", "price": curr_ask_price, "delta": ask_level_delta},
                     )
                 if prev_ask_size >= LEVEL_ABS_DELTA_THRESHOLD and curr_ask_size <= prev_ask_size * LEVEL_RATIO_DOWN_THRESHOLD and abs(ask_level_delta) >= LEVEL_ABS_DELTA_THRESHOLD:
                     self._emit_signal(
                         symbol,
                         state,
                         f"ask_level_{idx + 1}_pull",
-                        "鞈?",
-                        f"{symbol} 鞈ㄌidx + 1} ({curr_ask_price}) ??翰??撠?{abs(ask_level_delta):,}嚗?隡潮??賢??,
+                        "賣盤",
+                        f"{symbol} 賣{idx + 1} ({curr_ask_price}) 掛單量快速抽離 {abs(ask_level_delta):,}。",
                         min(0.95, 0.5 + abs(ask_level_delta) / max(prev_ask_size, 1)),
-                        {"level": f"鞈ㄌidx + 1}", "price": curr_ask_price, "delta": ask_level_delta},
+                        {"level": f"賣{idx + 1}", "price": curr_ask_price, "delta": ask_level_delta},
                     )
 
         if current_trade is None:
@@ -783,13 +756,13 @@ class FugleRealtimeStore:
             prev_size = prev["ask_map"].get(trade_price)
             curr_size = curr["ask_map"].get(trade_price)
             if prev_size is not None and curr_size is not None and curr_size >= prev_size:
-                self._emit_signal(symbol, state, "ask_replenish_after_trade", "鞈?", f"{symbol} ?漱??{trade_price:.2f} ?漱敺?鞈??雿皜?憓??撮鋆??, 0.78, {"price": trade_price, "trade_size": trade_size})
+                self._emit_signal(symbol, state, "ask_replenish_after_trade", "賣盤", f"{symbol} 成交價 {trade_price:.2f} 成交後，賣盤同價位未減反增，疑似補單。", 0.78, {"price": trade_price, "trade_size": trade_size})
 
         if prev_best_bid is not None and trade_price <= prev_best_bid:
             prev_size = prev["bid_map"].get(trade_price)
             curr_size = curr["bid_map"].get(trade_price)
             if prev_size is not None and curr_size is not None and curr_size >= prev_size:
-                self._emit_signal(symbol, state, "bid_replenish_after_trade", "鞎瑞", f"{symbol} ?漱??{trade_price:.2f} ?漱敺?鞎瑞?雿皜?憓??撮鋆??, 0.78, {"price": trade_price, "trade_size": trade_size})
+                self._emit_signal(symbol, state, "bid_replenish_after_trade", "買盤", f"{symbol} 成交價 {trade_price:.2f} 成交後，買盤同價位未減反增，疑似補單。", 0.78, {"price": trade_price, "trade_size": trade_size})
 
     def _update_opening_state(self, symbol: str, state: SymbolState, trade: dict[str, Any]) -> None:
         trade_price = float(trade.get("price") or 0)
@@ -798,7 +771,7 @@ class FugleRealtimeStore:
 
         if state.open_trade is None:
             state.open_trade = trade
-            self._emit_signal(symbol, state, "opening_trade", "?", f"{symbol} 撌脰??洵銝蝑??斗?鈭歹??寞 {trade_price:.2f}??, 0.5, {"open_price": trade_price}, cooldown_seconds=3600)
+            self._emit_signal(symbol, state, "opening_trade", "開盤", f"{symbol} 已記錄第一筆開盤成交，價格 {trade_price:.2f}。", 0.5, {"open_price": trade_price}, cooldown_seconds=3600)
 
         state.session_high = trade_price if state.session_high is None else max(state.session_high, trade_price)
         state.session_low = trade_price if state.session_low is None else min(state.session_low, trade_price)
@@ -818,7 +791,7 @@ class FugleRealtimeStore:
             with self.lock:
                 self.authenticated = True
                 self.error_message = None
-                self.last_status_message = "API key 撽???"
+                self.last_status_message = "API key 驗證成功"
             self.auth_ready.set()
             self._flush_pending_subscriptions()
             return
@@ -826,15 +799,15 @@ class FugleRealtimeStore:
         if event == "heartbeat":
             with self.lock:
                 self.last_event_at = now_taipei()
-                self.last_status_message = "?嗅 heartbeat"
+                self.last_status_message = "收到 heartbeat"
             return
 
         if event == "error":
             error_data = payload.get("data", {})
-            error_message = error_data.get("message") or str(error_data) or "?芰?航炊"
+            error_message = error_data.get("message") or str(error_data) or "未知錯誤"
             with self.lock:
-                self.error_message = f"Fugle 撽????梢隤歹?{error_message}"
-                self.last_status_message = "?嗅 error 鈭辣"
+                self.error_message = f"Fugle 驗證或訂閱錯誤：{error_message}"
+                self.last_status_message = "收到 error 事件"
                 if "Invalid authentication credentials" in error_message:
                     self.authenticated = False
             self.auth_ready.clear()
@@ -852,7 +825,7 @@ class FugleRealtimeStore:
         with self.lock:
             state = self.states[symbol]
             self.last_event_at = now_taipei()
-            self.last_status_message = f"?嗅 {channel} 鞈?"
+            self.last_status_message = f"收到 {channel} 資料"
 
             if channel == "books":
                 state.book = data
@@ -889,8 +862,8 @@ class FugleRealtimeStore:
         except Exception as exc:
             with self.lock:
                 self.connected = False
-                self.error_message = f"閮憭望?嚗channel} {symbol} - {exc}"
-                self.last_status_message = "?閮???憭?
+                self.error_message = f"訂閱失敗：{channel} {symbol} - {exc}"
+                self.last_status_message = "送出訂閱時發生例外"
             self.connection_ready.clear()
             self.auth_ready.clear()
             return False
@@ -924,22 +897,22 @@ class FugleRealtimeStore:
         if self.stock is None:
             with self.lock:
                 if self.error_message is None:
-                    self.error_message = "甇?????Fugle SDK嚗?蝔?
-                    self.last_status_message = "蝑? SDK 撱箇? stock client"
+                    self.error_message = "正在初始化 Fugle SDK，請稍候。"
+                    self.last_status_message = "等待 SDK 建立 stock client"
             return
 
         if not self.connection_ready.wait(timeout=1.0):
             with self.lock:
                 if self.error_message is None:
-                    self.error_message = "甇?撱箇? WebSocket ???嚗?蝔?
-                    self.last_status_message = "蝑? WebSocket connect"
+                    self.error_message = "正在建立 WebSocket 連線，請稍候。"
+                    self.last_status_message = "等待 WebSocket connect"
             return
 
         if not self.auth_ready.wait(timeout=2.0):
             with self.lock:
                 if self.error_message is None:
-                    self.error_message = "WebSocket 撌脤??嚗?撠摰? API 撽???
-                    self.last_status_message = "蝑? authenticated 鈭辣"
+                    self.error_message = "WebSocket 已連線，但尚未完成 API 驗證。"
+                    self.last_status_message = "等待 authenticated 事件"
             return
 
         self._flush_pending_subscriptions()
@@ -1014,9 +987,9 @@ def build_mock_snapshot(symbols: list[str]) -> dict[str, dict[str, Any]]:
         summary = summarise_book(book)
         signal_events = deque(maxlen=MAX_SIGNAL_EVENTS)
         if idx % 2 == 0:
-            signal_events.appendleft(SignalEvent("bid_stack_up", "鞎瑞", f"{symbol} 鞎瑞餈??葉嚗內蝭???, 0.74))
+            signal_events.appendleft(SignalEvent("bid_stack_up", "買盤", f"{symbol} 買盤近價掛單集中，示範訊號。", 0.74))
         else:
-            signal_events.appendleft(SignalEvent("ask_pull", "鞈?", f"{symbol} 鞈?鈭?敹恍?撠?蝷箇?閮???, 0.68))
+            signal_events.appendleft(SignalEvent("ask_pull", "賣盤", f"{symbol} 賣盤五檔快速減少，示範訊號。", 0.68))
 
         snapshots[symbol] = {
             "book": book,
@@ -1037,20 +1010,20 @@ def build_mock_snapshot(symbols: list[str]) -> dict[str, dict[str, Any]]:
 @st.cache_data(ttl=15, show_spinner=False)
 def test_rest_quote(api_key: str, symbol: str) -> dict[str, Any]:
     if RestClient is None:
-        return {"ok": False, "message": "RestClient 銝?剁?fugle-marketdata 憟辣?航?芣迤蝣箏?鋆?, "data": None}
+        return {"ok": False, "message": "RestClient 不可用，fugle-marketdata 套件可能未正確安裝。", "data": None}
 
     try:
         client = RestClient(api_key=api_key)
         quote = client.stock.intraday.quote(symbol=symbol)
-        return {"ok": True, "message": f"REST 皜祈岫??嚗歇?? {symbol} ?勗??, "data": quote}
+        return {"ok": True, "message": f"REST 測試成功：已取得 {symbol} 報價。", "data": quote}
     except Exception as exc:
-        return {"ok": False, "message": f"REST 皜祈岫憭望?嚗exc}", "data": None}
+        return {"ok": False, "message": f"REST 測試失敗：{exc}", "data": None}
 
 
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_benchmark_data() -> dict[str, Any]:
     if yf is None:
-        return {"ok": False, "message": "yfinance 憟辣?芸?鋆??⊥?頛?函????, "items": []}
+        return {"ok": False, "message": "yfinance 套件未安裝，無法載入全球指數參考。", "items": []}
 
     items: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -1067,7 +1040,7 @@ def fetch_benchmark_data() -> dict[str, Any]:
 
             close_series = history["Close"].dropna()
             if close_series.empty:
-                raise ValueError("?亦?寞鞈?")
+                raise ValueError("查無價格資料")
 
             last_price = float(close_series.iloc[-1])
             previous_close = None
@@ -1111,9 +1084,9 @@ def fetch_benchmark_data() -> dict[str, Any]:
                 }
             )
 
-    message = "?函?????交???
+    message = "全球指數參考載入成功。"
     if failures:
-        message = "?典??函?????亙仃??" + " | ".join(failures[:3])
+        message = "部分全球指數參考載入失敗：" + " | ".join(failures[:3])
     return {"ok": len(failures) < len(BENCHMARK_SYMBOLS), "message": message, "items": items}
 
 
@@ -1144,12 +1117,12 @@ def update_index_shock_signals(benchmark_result: dict[str, Any]) -> list[SignalE
         last_emitted = st.session_state.index_signal_cooldowns.get(cooldown_key, 0.0)
 
         if abs(change_pct) >= 0.35 and now_ts - last_emitted >= 20:
-            direction = "??" if change_pct > 0 else "?征"
+            direction = "偏多" if change_pct > 0 else "偏空"
             st.session_state.index_signal_events.appendleft(
                 SignalEvent(
                     event_type="twii_shock",
-                    side="憭抒",
-                    message=f"?啁??? 15 蝘???{change_pct:+.2f}%嚗之?文?暹?憿?{direction} ?啣???,
+                    side="大盤",
+                    message=f"台灣加權指數 15 秒變動 {change_pct:+.2f}%，大盤出現明顯 {direction} 異動。",
                     score=min(0.95, 0.6 + abs(change_pct)),
                     extra={"change_pct": change_pct},
                 )
@@ -1164,9 +1137,9 @@ def calc_symbol_signal_score(symbol_data: dict[str, Any], index_events: list[Sig
     reasons: list[str] = []
 
     for event in symbol_data.get("signal_events", [])[:5]:
-        if event.side == "鞎瑞":
+        if event.side == "買盤":
             score += event.score
-        elif event.side == "鞈?":
+        elif event.side == "賣盤":
             score -= event.score
         reasons.append(event.message)
 
@@ -1182,19 +1155,19 @@ def calc_symbol_signal_score(symbol_data: dict[str, Any], index_events: list[Sig
             intraday_move_pct = (last_price - open_price) / open_price * 100
             if intraday_move_pct >= 1.2:
                 score += 0.8
-                reasons.append(f"?曉?詨??銝撞 {intraday_move_pct:.2f}%??)
+                reasons.append(f"現價相對開盤上漲 {intraday_move_pct:.2f}%。")
             elif intraday_move_pct <= -1.2:
                 score -= 0.8
-                reasons.append(f"?曉?詨??銝? {abs(intraday_move_pct):.2f}%??)
+                reasons.append(f"現價相對開盤下跌 {abs(intraday_move_pct):.2f}%。")
 
     if last_trade and session_high and session_low:
         last_price = float(last_trade.get("price") or 0)
         if session_high and last_price >= session_high * 0.997:
             score += 0.35
-            reasons.append("?寞?亥??支葉擃???)
+            reasons.append("價格接近盤中高點。")
         if session_low and last_price <= session_low * 1.003:
             score -= 0.35
-            reasons.append("?寞?亥??支葉雿???)
+            reasons.append("價格接近盤中低點。")
 
     for event in index_events[:2]:
         change_pct = float(event.extra.get("change_pct", 0.0))
@@ -1209,8 +1182,8 @@ def calc_symbol_signal_score(symbol_data: dict[str, Any], index_events: list[Sig
 
 def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
     st.markdown("---")
-    st.subheader("?函????)
-    st.caption("甇文??箏?????航?箏辣?脣?對??漱???單??漱??)
+    st.subheader("全球指數參考")
+    st.caption("此區為參考數據，可能為延遲報價，非交易所即時成交。")
 
     for item in benchmark_result.get("items", []):
         price = item.get("price")
@@ -1218,25 +1191,25 @@ def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
         change_pct = item.get("change_pct")
         if price is None:
             price_text = "-"
-            delta = "鞈??怎撩"
+            delta = "資料暫缺"
         else:
             sign = "+" if change is not None and change > 0 else ""
             delta = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)" if change is not None and change_pct is not None else "-"
             price_text = f"{price:,.2f}"
 
         st.metric(item.get("label", "-"), price_text, delta=delta)
-        st.caption(f"?敺??{item.get('time', '-')} | {item.get('symbol', '-')}")
+        st.caption(f"最後更新 {item.get('time', '-')} | {item.get('symbol', '-')}")
         if item.get("stale"):
-            age_text = f"{int(item['age_seconds'])} 蝘? if item.get("age_seconds") is not None else "?芰"
-            st.caption(f"靘??芣?堆?{age_text}")
-        st.caption(item.get("note", "??))
+            age_text = f"{int(item['age_seconds'])} 秒" if item.get("age_seconds") is not None else "未知"
+            st.caption(f"來源未更新：{age_text}")
+        st.caption(item.get("note", "參考"))
 
     if benchmark_result.get("message"):
         st.caption(benchmark_result["message"])
 
 
 def render_index_signal_panel(benchmark_result: dict[str, Any], index_events: list[SignalEvent]) -> None:
-    st.markdown('<div class="panel-title">憭抒?啣??內</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">大盤異動提示</div>', unsafe_allow_html=True)
     twii_item = next((item for item in benchmark_result.get("items", []) if item.get("symbol") == "^TWII"), None)
 
     cols = st.columns(4)
@@ -1246,25 +1219,25 @@ def render_index_signal_panel(benchmark_result: dict[str, Any], index_events: li
         change_pct = float(twii_item.get("change_pct") or 0)
         sign = "+" if change > 0 else ""
         delta_text = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)"
-        cols[0].metric("?啁???", price_text, delta=delta_text)
-        cols[1].metric("?敺??, twii_item.get("time", "-"))
-        cols[2].metric("鞈????, "靘??芣?? if twii_item.get("stale") else "?湔銝?)
-        cols[3].metric("鈭辣??, len(index_events))
+        cols[0].metric("台灣加權指數", price_text, delta=delta_text)
+        cols[1].metric("最後更新", twii_item.get("time", "-"))
+        cols[2].metric("資料狀態", "來源未更新" if twii_item.get("stale") else "正常")
+        cols[3].metric("事件數", len(index_events))
     else:
-        cols[0].metric("?啁???", "-")
-        cols[1].metric("?敺??, "-")
-        cols[2].metric("鞈????, "?∟???)
-        cols[3].metric("鈭辣??, len(index_events))
+        cols[0].metric("台灣加權指數", "-")
+        cols[1].metric("最後更新", "-")
+        cols[2].metric("資料狀態", "無資料")
+        cols[3].metric("事件數", len(index_events))
 
     if not index_events:
-        render_empty_box("?桀?撠?菜葫?啣???甈??貊??＊?亥???, medium=True)
+        render_empty_box("目前尚未偵測到台灣加權指數的明顯急變。", medium=True)
         return
 
     rows = [
         {
-            "??": event.created_at.strftime("%H:%M:%S"),
-            "撘瑕漲": classify_severity(event.score),
-            "?批捆": event.message,
+            "時間": event.created_at.strftime("%H:%M:%S"),
+            "強度": classify_severity(event.score),
+            "內容": event.message,
         }
         for event in index_events[:5]
     ]
@@ -1281,9 +1254,9 @@ def render_empty_box(message: str, tall: bool = False, medium: bool = False) -> 
 
 
 def render_order_book(symbol: str, book: dict[str, Any] | None) -> None:
-    st.markdown(f'<div class="panel-title">{symbol} 鈭?憪眺憪都</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="panel-title">{symbol} 五檔委買委賣</div>', unsafe_allow_html=True)
     if not book:
-        render_empty_box("撠?嗅鈭?鞈???, tall=True)
+        render_empty_box("尚未收到五檔資料。", tall=True)
         return
 
     bids = book.get("bids", [])
@@ -1292,30 +1265,37 @@ def render_order_book(symbol: str, book: dict[str, Any] | None) -> None:
     for idx in range(max(len(bids), len(asks), 5)):
         bid = bids[idx] if idx < len(bids) else {}
         ask = asks[idx] if idx < len(asks) else {}
-        rows.append({"憪眺??: bid.get("size", ""), "憪眺??: bid.get("price", ""), "憪都??: ask.get("price", ""), "憪都??: ask.get("size", "")})
+        rows.append(
+            {
+                "委買量": bid.get("size", ""),
+                "委買價": bid.get("price", ""),
+                "委賣價": ask.get("price", ""),
+                "委賣量": ask.get("size", ""),
+            }
+        )
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=ORDER_BOOK_HEIGHT)
-    st.caption(f"?湔??嚗format_fugle_time(book.get('time'))}")
+    st.caption(f"更新時間：{format_fugle_time(book.get('time'))}")
 
 
 def render_trade_summary(symbol: str, trade: dict[str, Any] | None, quote_data: dict[str, Any] | None) -> None:
-    st.markdown(f'<div class="panel-title">{symbol} ??唳?鈭?/div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="panel-title">{symbol} 最新成交</div>', unsafe_allow_html=True)
     if not trade:
-        render_empty_box("撠?嗅?漱鞈???, medium=True)
+        render_empty_box("尚未收到成交資料。", medium=True)
         return
 
     cols = st.columns(4)
-    cols[0].metric("?漱??, trade.get("price", "-"))
-    cols[1].metric("?漱??, trade.get("size", "-"))
-    cols[2].metric("蝝舐???, trade.get("volume", "-"))
-    cols[3].metric("??", format_fugle_time(trade.get("time")))
+    cols[0].metric("成交價", trade.get("price", "-"))
+    cols[1].metric("成交量", trade.get("size", "-"))
+    cols[2].metric("累積量", trade.get("volume", "-"))
+    cols[3].metric("時間", format_fugle_time(trade.get("time")))
     if quote_data and quote_data.get("isClose"):
-        st.caption("?桀?憿舐內?嗥敹怎??)
+        st.caption("目前顯示收盤快照。")
 
 
 def render_trade_tape(trades: list[dict[str, Any]]) -> None:
-    st.markdown('<div class="panel-title">?單??漱?敦</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">即時成交明細</div>', unsafe_allow_html=True)
     if not trades:
-        render_empty_box("撠?嗅?單??漱?敦??, tall=True)
+        render_empty_box("尚未收到即時成交明細。", tall=True)
         return
 
     def fmt_price(value: Any) -> str:
@@ -1339,11 +1319,11 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
 
         rows.append(
             {
-                "??": format_fugle_time(item.get("time")),
-                "鞎瑕": fmt_price(bid),
-                "鞈?": fmt_price(ask),
-                "?漱?寞": fmt_price(price),
-                "?賊?": item.get("size"),
+                "時間": format_fugle_time(item.get("time")),
+                "買價": fmt_price(bid),
+                "賣價": fmt_price(ask),
+                "成交價格": fmt_price(price),
+                "數量": item.get("size"),
                 "_side": side,
             }
         )
@@ -1360,7 +1340,7 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
             color = "color: #34c759; font-weight: 700;"
 
         columns = list(row.index)
-        for target_col in ("?漱?寞", "?賊?"):
+        for target_col in ("成交價格", "數量"):
             if target_col in columns:
                 styles[columns.index(target_col)] = color
         return styles
@@ -1370,18 +1350,18 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
 
 
 def render_signal_panel(symbol: str, signal_events: list[SignalEvent]) -> None:
-    st.markdown(f'<div class="panel-title">{symbol} ?啣虜閮?</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="panel-title">{symbol} 異常訊號監控</div>', unsafe_allow_html=True)
     if not signal_events:
-        render_empty_box("?桀?撠?菜葫?唳?憿舐?鈭???鈭斤撣詻?, tall=True)
+        render_empty_box("目前尚未偵測到明顯的五檔或成交異常。", tall=True)
         return
 
     rows = [
         {
-            "??": event.created_at.strftime("%H:%M:%S"),
-            "?孵?": event.side,
-            "憿?": event.event_type,
-            "撘瑕漲": classify_severity(event.score),
-            "?批捆": event.message,
+            "時間": event.created_at.strftime("%H:%M:%S"),
+            "方向": event.side,
+            "類型": event.event_type,
+            "強度": classify_severity(event.score),
+            "內容": event.message,
         }
         for event in signal_events[:8]
     ]
@@ -1395,49 +1375,45 @@ def build_price_volume_distribution(trade_history: list[dict[str, Any]]) -> pd.D
         size = int(item.get("size") or 0)
         if price is None or size <= 0:
             continue
-        bucket = distribution.setdefault(price, {"?漱?賊?": 0, "?漱蝑": 0})
-        bucket["?漱?賊?"] += size
-        bucket["?漱蝑"] += 1
+        bucket = distribution.setdefault(price, {"成交總量": 0, "成交筆數": 0})
+        bucket["成交總量"] += size
+        bucket["成交筆數"] += 1
 
     if not distribution:
         return pd.DataFrame()
 
     rows = [
-        {
-            "?漱??: f"{price:.2f}",
-            "?漱?賊?": values["?漱?賊?"],
-            "?漱蝑": values["?漱蝑"],
-        }
+        {"成交價": f"{price:.2f}", "成交總量": values["成交總量"], "成交筆數": values["成交筆數"]}
         for price, values in sorted(distribution.items(), key=lambda item: item[0], reverse=True)
     ]
     return pd.DataFrame(rows)
 
 
 def render_book_summary(summary: dict[str, Any] | None, trade_history: list[dict[str, Any]]) -> None:
-    st.markdown('<div class="panel-title">鈭?蝯???</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">五檔結構摘要</div>', unsafe_allow_html=True)
     cols = st.columns(4)
     if not summary:
-        cols[0].metric("鞎瑞蝮賡?", "-")
-        cols[1].metric("鞈?蝮賡?", "-")
-        cols[2].metric("鞎瑕?銝???", "-")
-        cols[3].metric("鞈??銝???", "-")
-        render_empty_box("撠蝝舐?頞喳?鈭?蝯???, medium=True)
+        cols[0].metric("買盤總量", "-")
+        cols[1].metric("賣盤總量", "-")
+        cols[2].metric("買前三檔占比", "-")
+        cols[3].metric("賣前三檔占比", "-")
+        render_empty_box("尚未累積足夠五檔結構。", medium=True)
         return
-    cols[0].metric("鞎瑞蝮賡?", f"{int(summary['bid_total']):,}")
-    cols[1].metric("鞈?蝮賡?", f"{int(summary['ask_total']):,}")
-    cols[2].metric("鞎瑕?銝???", f"{summary['bid_near3_ratio']:.0%}")
-    cols[3].metric("鞈??銝???", f"{summary['ask_near3_ratio']:.0%}")
+    cols[0].metric("買盤總量", f"{int(summary['bid_total']):,}")
+    cols[1].metric("賣盤總量", f"{int(summary['ask_total']):,}")
+    cols[2].metric("買前三檔占比", f"{summary['bid_near3_ratio']:.0%}")
+    cols[3].metric("賣前三檔占比", f"{summary['ask_near3_ratio']:.0%}")
     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="panel-title" style="font-size:1.05rem;">?嗆?漱????/div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-title" style="font-size:1.05rem;">當日成交分價與數量</div>', unsafe_allow_html=True)
     distribution_df = build_price_volume_distribution(trade_history)
     if distribution_df.empty:
-        render_empty_box("撠蝝舐?頞喳????漱鞈???, medium=True)
+        render_empty_box("尚未累積足夠的逐筆成交資料。", medium=True)
         return
     st.dataframe(distribution_df, width="stretch", hide_index=True, height=220)
 
 
 def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
-    st.markdown(f'<div class="panel-title">{symbol} ?餈質馱</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="panel-title">{symbol} 開盤追蹤</div>', unsafe_allow_html=True)
     open_trade = symbol_data.get("open_trade")
     last_trade = symbol_data.get("last_trade")
     session_high = symbol_data.get("session_high")
@@ -1445,49 +1421,49 @@ def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
 
     cols = st.columns(4)
     if not open_trade:
-        cols[0].metric("?蝚砌?蝑?, "-")
-        cols[1].metric("?桀??詨??", "-")
-        cols[2].metric("?支葉擃?", f"{session_high:,.2f}" if session_high else "-")
-        cols[3].metric("?支葉雿?", f"{session_low:,.2f}" if session_low else "-")
+        cols[0].metric("開盤第一筆", "-")
+        cols[1].metric("目前相對開盤", "-")
+        cols[2].metric("盤中高點", f"{session_high:,.2f}" if session_high else "-")
+        cols[3].metric("盤中低點", f"{session_low:,.2f}" if session_low else "-")
         st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
         return
 
     open_price = float(open_trade.get("price") or 0)
     last_price = float(last_trade.get("price") or 0) if last_trade else 0
     move_pct = 0.0 if open_price == 0 or last_price == 0 else (last_price - open_price) / open_price * 100
-    cols[0].metric("?蝚砌?蝑?, f"{open_price:,.2f}")
-    cols[1].metric("?桀??詨??", f"{move_pct:+.2f}%")
-    cols[2].metric("?支葉擃?", f"{session_high:,.2f}" if session_high else "-")
-    cols[3].metric("?支葉雿?", f"{session_low:,.2f}" if session_low else "-")
+    cols[0].metric("開盤第一筆", f"{open_price:,.2f}")
+    cols[1].metric("目前相對開盤", f"{move_pct:+.2f}%")
+    cols[2].metric("盤中高點", f"{session_high:,.2f}" if session_high else "-")
+    cols[3].metric("盤中低點", f"{session_low:,.2f}" if session_low else "-")
     st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
 
 
 def render_decision_panel(symbol: str, symbol_data: dict[str, Any], index_events: list[SignalEvent]) -> None:
-    st.markdown(f'<div class="panel-title">{symbol} 蝬??斗</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="panel-title">{symbol} 綜合判斷</div>', unsafe_allow_html=True)
     score, reasons = calc_symbol_signal_score(symbol_data, index_events)
     bias = score_to_bias(score)
     cols = st.columns(3)
-    cols[0].metric("蝬??", f"{score:+.2f}")
-    cols[1].metric("?斗", bias)
-    cols[2].metric("靘???, len(reasons))
+    cols[0].metric("綜合分數", f"{score:+.2f}")
+    cols[1].metric("判斷", bias)
+    cols[2].metric("依據數", len(reasons))
     if not reasons:
-        render_empty_box("?桀?鞈?銝雲嚗??芸耦??蝣箇?憭征閫撖?隢?, medium=True)
+        render_empty_box("目前資料不足，尚未形成明確的多空觀察結論。", medium=True)
         return
-    st.dataframe(pd.DataFrame([{"隤芣?": reason} for reason in reasons]), width="stretch", hide_index=True, height=OPEN_PANEL_HEIGHT)
+    st.dataframe(pd.DataFrame([{"說明": reason} for reason in reasons]), width="stretch", hide_index=True, height=OPEN_PANEL_HEIGHT)
 
 
 def render_tick_record_panel(symbol: str, trade_history: list[dict[str, Any]]) -> None:
-    st.markdown(f'<div class="panel-title">{symbol} ???閮?</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="panel-title">{symbol} 開盤逐筆記錄</div>', unsafe_allow_html=True)
     if not trade_history:
-        render_empty_box("撠??蝝舐????漱蝝??, tall=True)
+        render_empty_box("尚未開始累積逐筆成交紀錄。", tall=True)
         return
-    rows = [{"??": format_fugle_time(item.get("time")), "?漱??: item.get("price"), "?漱??: item.get("size"), "摨?": item.get("serial")} for item in trade_history[:50]]
+    rows = [{"時間": format_fugle_time(item.get("time")), "成交價": item.get("price"), "成交量": item.get("size"), "序號": item.get("serial")} for item in trade_history[:50]]
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=TRADE_TAPE_HEIGHT)
 
 
 def render_log_panel(symbols: list[str]) -> None:
-    st.subheader("鞈??賢蝝??)
-    st.caption(f"???漱??瑼?閬?閮??神?伐?{DATA_LOG_DIR}")
+    st.subheader("資料落地紀錄")
+    st.caption(f"逐筆成交、五檔摘要與訊號會寫入：{DATA_LOG_DIR}")
     today = today_taipei_str()
     rows = []
     for symbol in symbols:
@@ -1496,22 +1472,22 @@ def render_log_panel(symbols: list[str]) -> None:
         signal_path = SIGNAL_LOG_DIR / f"{today}_{symbol}_signals.csv"
         rows.append(
             {
-                "?∠巨": symbol,
-                "??瑼?: tick_path.name,
-                "鈭?瑼?: book_path.name,
-                "閮?瑼?: signal_path.name,
-                "??撌脣遣蝡?: "?? if tick_path.exists() else "??,
-                "鈭?撌脣遣蝡?: "?? if book_path.exists() else "??,
-                "閮?撌脣遣蝡?: "?? if signal_path.exists() else "??,
+                "股票": symbol,
+                "逐筆檔案": tick_path.name,
+                "五檔檔案": book_path.name,
+                "訊號檔案": signal_path.name,
+                "逐筆已寫入": "是" if tick_path.exists() else "否",
+                "五檔已寫入": "是" if book_path.exists() else "否",
+                "訊號已寫入": "是" if signal_path.exists() else "否",
             }
         )
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def resolve_market_source(mode: str, api_key: str | None, symbols: list[str]) -> dict[str, Any]:
-    if mode == "蝷箇?鞈?":
+    if mode == "示範資料":
         return {
-            "source_name": "蝷箇?鞈?",
+            "source_name": "示範資料",
             "using_demo": True,
             "snapshots": build_mock_snapshot(symbols),
             "status": {
@@ -1519,53 +1495,53 @@ def resolve_market_source(mode: str, api_key: str | None, symbols: list[str]) ->
                 "authenticated": False,
                 "error_message": None,
                 "last_event_at": now_taipei(),
-                "last_status_message": "蝷箇?璅∪?",
+                "last_status_message": "示範模式",
                 "subscriptions": 0,
                 "pending_subscriptions": 0,
             },
-            "rest_result": {"ok": False, "message": "蝷箇?璅∪?銝??瑁? REST 皜祈岫??, "data": None},
+            "rest_result": {"ok": False, "message": "示範模式下不執行 REST 測試。", "data": None},
             "rest_snapshots": {},
-            "diagnostic_note": "?桀?撘瑕雿輻蝷箇?鞈?嚗???? Fugle??,
+            "diagnostic_note": "目前強制使用示範資料，不會連線 Fugle。",
             "store": None,
         }
 
     if not api_key:
         return {
-            "source_name": "蝷箇?鞈?",
+            "source_name": "示範資料",
             "using_demo": True,
             "snapshots": build_mock_snapshot(symbols),
             "status": {
                 "connected": False,
                 "authenticated": False,
-                "error_message": "?芣?靘?Fugle API key??,
+                "error_message": "未提供 Fugle API key。",
                 "last_event_at": now_taipei(),
-                "last_status_message": "?芸????喟內蝭芋撘?,
+                "last_status_message": "自動切換至示範模式",
                 "subscriptions": 0,
                 "pending_subscriptions": 0,
             },
-            "rest_result": {"ok": False, "message": "?芣?靘?API key嚗歇?寧蝷箇?鞈???, "data": None},
+            "rest_result": {"ok": False, "message": "未提供 API key，已改用示範資料。", "data": None},
             "rest_snapshots": {},
-            "diagnostic_note": "撠閮剖? Fugle API key嚗?甇支誑蝷箇?鞈?????,
+            "diagnostic_note": "尚未設定 Fugle API key，因此以示範資料運作。",
             "store": None,
         }
 
     if RestClient is None or WebSocketClient is None:
         return {
-            "source_name": "蝷箇?鞈?",
+            "source_name": "示範資料",
             "using_demo": True,
             "snapshots": build_mock_snapshot(symbols),
             "status": {
                 "connected": False,
                 "authenticated": False,
-                "error_message": "fugle-marketdata 憟辣?芸?鋆?,
+                "error_message": "fugle-marketdata 套件未安裝。",
                 "last_event_at": now_taipei(),
-                "last_status_message": "?芸????喟內蝭芋撘?,
+                "last_status_message": "自動切換至示範模式",
                 "subscriptions": 0,
                 "pending_subscriptions": 0,
             },
-            "rest_result": {"ok": False, "message": "fugle-marketdata 憟辣?芸?鋆?, "data": None},
+            "rest_result": {"ok": False, "message": "fugle-marketdata 套件未安裝。", "data": None},
             "rest_snapshots": {},
-            "diagnostic_note": "蝻箏? Fugle SDK嚗?甇支誑蝷箇?鞈?????,
+            "diagnostic_note": "缺少 Fugle SDK，因此以示範資料運作。",
             "store": None,
         }
 
@@ -1573,7 +1549,7 @@ def resolve_market_source(mode: str, api_key: str | None, symbols: list[str]) ->
     primary_rest_result = test_rest_quote(api_key, symbols[0])
 
     if not primary_rest_result.get("ok"):
-        fallback_label = "Fugle嚗?霅仃???寧蝷箇?鞈?嚗? if mode == "?芸?" else "Fugle嚗?霅仃??"
+        fallback_label = "Fugle（驗證失敗，改用示範資料）" if mode == "自動" else "Fugle（驗證失敗）"
         return {
             "source_name": fallback_label,
             "using_demo": True,
@@ -1583,13 +1559,13 @@ def resolve_market_source(mode: str, api_key: str | None, symbols: list[str]) ->
                 "authenticated": False,
                 "error_message": primary_rest_result.get("message"),
                 "last_event_at": now_taipei(),
-                "last_status_message": "REST 撽?憭望?嚗??單?銝脫?",
+                "last_status_message": "REST 驗證失敗，未啟用即時串流",
                 "subscriptions": 0,
                 "pending_subscriptions": 0,
             },
             "rest_result": primary_rest_result,
             "rest_snapshots": {},
-            "diagnostic_note": "Fugle REST 撌脣仃???迨銝??岫?擃??賜?甇餃 WebSocket 銝???內蝭??????Ｚ?閮??Ｘ??,
+            "diagnostic_note": "Fugle REST 已失敗，因此不再把整體功能綁死在 WebSocket 上，先退回示範資料保留版面與訊號面板。",
             "store": None,
         }
 
@@ -1608,7 +1584,7 @@ def resolve_market_source(mode: str, api_key: str | None, symbols: list[str]) ->
         "status": store.status(),
         "rest_result": primary_rest_result,
         "rest_snapshots": rest_snapshots,
-        "diagnostic_note": "Fugle REST 撽???嚗歇??單?銝脫?璅∪?嚗?嗥敺?冽嚗?Ｘ?雿輻 REST 敹怎憛怠??,
+        "diagnostic_note": "Fugle REST 驗證成功，已啟用即時串流模式。",
         "store": store,
     }
 
@@ -1630,7 +1606,7 @@ def merge_symbol_snapshot(rest_snapshot: dict[str, Any] | None, stream_snapshot:
     }
 
 
-st.set_page_config(page_title="?啗?單?????, page_icon=":bar_chart:", layout="wide")
+st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
 inject_custom_css()
 ensure_log_dirs()
 
@@ -1644,22 +1620,22 @@ if "access_role" not in st.session_state:
 if not is_logged_in():
     render_login_gate()
 
-st.title("?啗?單?????)
-st.caption("雿輻 Streamlit 鋆賭???∩?瑼?鞎瑕?鞈???鈭扎??方蕭頩扎撣貉????支葉鞈??賢?????)
+st.title("台股即時監控台")
+st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、開盤追蹤、異常訊號與盤中資料落地監控頁面。")
 
 with st.sidebar:
-    st.success(f"撌脩?伐?{st.session_state.get('access_key_masked', '-')}")
-    st.caption("???" if is_admin() else "?????")
-    if st.button("?餃", use_container_width=True):
+    st.success(f"已登入序號：{st.session_state.get('access_key_masked', '-')}")
+    st.caption("管理者" if is_admin() else "一般使用者")
+    if st.button("登出", use_container_width=True):
         logout()
         st.rerun()
     st.markdown("---")
-    st.header("??閮剖?")
-    symbols_raw = st.text_input("?∠巨隞?Ⅳ", value=", ".join(DEFAULT_SYMBOLS), help="隢????嚗?憒?2330, 2317")
+    st.header("監控設定")
+    symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
     symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
-    refresh_seconds = st.slider("?瑟蝘", min_value=1, max_value=10, value=1)
-    source_mode = st.selectbox("鞈?皞芋撘?, ["?芸?", "Fugle", "蝷箇?鞈?"], index=0)
-    st.caption("Fugle ?祥?寞????望?嚗??蟡其誨蝣潭???雿輻 books ??trades ?拙??)
+    refresh_seconds = st.slider("刷新秒數", min_value=1, max_value=10, value=1)
+    source_mode = st.selectbox("資料源模式", ["自動", "Fugle", "示範資料"], index=0)
+    st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。")
 
 raw_api_key, api_key_source = get_raw_api_key()
 api_key, api_key_note = normalize_fugle_api_key(raw_api_key)
@@ -1678,38 +1654,38 @@ using_demo = market_state["using_demo"]
 store = market_state["store"]
 
 if using_demo:
-    st.warning("?桀?雿輻蝷箇?鞈?璅∪?? Fugle 撽???敺?????啣????)
+    st.warning("目前使用示範資料模式。當 Fugle 驗證通過後，會自動回到即時行情。")
 
 status_cols = st.columns(6)
-status_cols[0].metric("璅∪?", "蝷箇?" if using_demo else "?單?")
-status_cols[1].metric("鞈?皞?, market_state["source_name"])
-status_cols[2].metric("???", "撌脤??" if status.get("connected") else "?芷??")
-status_cols[3].metric("撽?", "??" if status.get("authenticated") else "?芸???)
-status_cols[4].metric("撌脰???, status.get("subscriptions", 0))
-status_cols[5].metric("?敺?隞?, status["last_event_at"].strftime("%H:%M:%S") if status.get("last_event_at") else "-")
+status_cols[0].metric("模式", "示範" if using_demo else "即時")
+status_cols[1].metric("資料源", market_state["source_name"])
+status_cols[2].metric("連線", "已連線" if status.get("connected") else "未連線")
+status_cols[3].metric("驗證", "成功" if status.get("authenticated") else "未完成")
+status_cols[4].metric("已訂閱", status.get("subscriptions", 0))
+status_cols[5].metric("最後事件", status["last_event_at"].strftime("%H:%M:%S") if status.get("last_event_at") else "-")
 
 if status.get("error_message"):
     st.error(status["error_message"])
 
 render_log_panel(symbols)
 if is_admin():
-    with st.expander("????"):
-        st.write(f"API key ???{api_key_source}")
-        st.write(f"API key ???{mask_secret(raw_api_key)}")
-        st.write(f"API key ???{api_key_note}")
-        st.write(f"??????{source_mode}")
-        st.write(f"??????{market_state['source_name']}")
-        st.write(f"?????{'??' if using_demo else '??'}")
-        st.write(f"?????{'???' if status.get('connected') else '???'}")
-        st.write(f"?????{'??' if status.get('authenticated') else '???'}")
-        st.write(f"?????{status.get('last_status_message') or '-'}")
-        st.write(f"?????{status.get('error_message') or '-'}")
-        st.write(f"?????{market_state['diagnostic_note']}")
-        st.write(f"???????{DATA_LOG_DIR}")
-    with st.expander("REST ??"):
-        st.write(f"?????{symbols[0] if symbols else DEFAULT_SYMBOLS[0]}")
-        st.write(f"?????{'??' if rest_result.get('ok') else '??'}")
-        st.write(f"???{rest_result.get('message')}")
+    with st.expander("連線診斷"):
+        st.write(f"API key 來源：{api_key_source}")
+        st.write(f"API key 狀態：{mask_secret(raw_api_key)}")
+        st.write(f"API key 處理：{api_key_note}")
+        st.write(f"資料源模式：{source_mode}")
+        st.write(f"實際資料源：{market_state['source_name']}")
+        st.write(f"目前模式：{'示範' if using_demo else '即時'}")
+        st.write(f"連線狀態：{'已連線' if status.get('connected') else '未連線'}")
+        st.write(f"驗證狀態：{'成功' if status.get('authenticated') else '未完成'}")
+        st.write(f"狀態訊息：{status.get('last_status_message') or '-'}")
+        st.write(f"錯誤訊息：{status.get('error_message') or '-'}")
+        st.write(f"系統判斷：{market_state['diagnostic_note']}")
+        st.write(f"資料落地目錄：{DATA_LOG_DIR}")
+    with st.expander("REST 測試"):
+        st.write(f"測試標的：{symbols[0] if symbols else DEFAULT_SYMBOLS[0]}")
+        st.write(f"測試結果：{'成功' if rest_result.get('ok') else '失敗'}")
+        st.write(f"訊息：{rest_result.get('message')}")
         if rest_result.get("ok") and rest_result.get("data"):
             st.json(rest_result["data"])
 tabs = st.tabs(symbols)
@@ -1756,8 +1732,14 @@ if refresh_seconds > 0:
     time.sleep(refresh_seconds)
     st.rerun()
 
-with st.expander("?函蔡隤芣?"):
+with st.expander("部署說明"):
     st.markdown(
         """
-        - ?祉頂蝯曹???∩?瑼??鈭扎??方蕭頩扎撣貉????函????踴?        - ??Fugle 撽?憭望???蝟餌絞???內蝭????踹??游??Ｗ仃??        - ?支葉???漱??瑼?閬??啣虜閮???甇亙神??`data_logs`嚗靘踹?蝥? replay ??皜研?        - ?交?文? WebSocket ?⊥?冽嚗頂蝯望?雿輻 REST quote 敹怎憛怠鈭????唳?鈭扎?        - ?函???雿輻 Yahoo Finance ?????航?箏辣?脣?對?銝遣霅啁?乩??箔漱????        - ?啣虜閮?撅祈?????嚗?銝剛??拙霈嚗?隞?”靽??抒?鞎瑁都撱箄降??        """
+        - 本系統使用 Fugle Market Data API 與 WebSocket 串接台股即時行情。
+        - 若 Fugle 驗證失敗，系統會自動退回示範資料模式以保留版面。
+        - 逐筆、五檔與訊號資料會寫入 `data_logs` 目錄，方便後續 replay 或檢查。
+        - 收盤後若 WebSocket 沒有新推播，畫面會以 REST quote 顯示最後快照。
+        - 全球指數區使用 Yahoo Finance 參考資料，可能為延遲報價。
+        - 異常訊號屬規則式監控，適合盤中輔助判讀，不代表保證性的買賣建議。
+        """
     )
