@@ -1062,7 +1062,7 @@ def render_order_book(symbol: str, book: dict[str, Any] | None) -> None:
 def render_trade_summary(symbol: str, trade: dict[str, Any] | None, quote_data: dict[str, Any] | None) -> None:
     st.markdown(f'<div class="panel-title">{symbol} 最新成交</div>', unsafe_allow_html=True)
     if not trade:
-        render_empty_box("尚未收到成交資料。", tall=True)
+        render_empty_box("尚未收到成交資料。", medium=True)
         return
 
     cols = st.columns(4)
@@ -1143,7 +1143,7 @@ def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
         cols[1].metric("目前相對開盤", "-")
         cols[2].metric("盤中高點", f"{session_high:,.2f}" if session_high else "-")
         cols[3].metric("盤中低點", f"{session_low:,.2f}" if session_low else "-")
-        render_empty_box("尚未記錄到第一筆開盤成交。", medium=True)
+        st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
         return
 
     open_price = float(open_trade.get("price") or 0)
@@ -1153,6 +1153,7 @@ def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
     cols[1].metric("目前相對開盤", f"{move_pct:+.2f}%")
     cols[2].metric("盤中高點", f"{session_high:,.2f}" if session_high else "-")
     cols[3].metric("盤中低點", f"{session_low:,.2f}" if session_low else "-")
+    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
 
 
 def render_decision_panel(symbol: str, symbol_data: dict[str, Any], index_events: list[SignalEvent]) -> None:
