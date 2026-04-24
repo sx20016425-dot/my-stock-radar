@@ -32,7 +32,7 @@ MAX_BOOK_HISTORY = 300
 MAX_TRADE_HISTORY = 2000
 MAX_SIGNAL_EVENTS = 100
 UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
-
+BENCHMARK_STALE_SECONDS = 300
 BENCHMARK_SYMBOLS = [
     {"label": "台灣加權指數", "symbol": "^TWII", "note": "現貨指數參考"},
     {"label": "日經225", "symbol": "^N225", "note": "現貨指數參考"},
@@ -67,10 +67,24 @@ def format_benchmark_time(value: Any) -> str:
     try:
         ts = value if isinstance(value, pd.Timestamp) else pd.Timestamp(value)
         if ts.tzinfo is None:
-            return ts.strftime("%H:%M")
-        return ts.tz_convert(TAIPEI_TZ).strftime("%H:%M")
+            return ts.strftime("%H:%M:%S")
+        return ts.tz_convert(TAIPEI_TZ).strftime("%H:%M:%S")
     except Exception:
         return "-"
+
+
+def benchmark_age_seconds(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        ts = value if isinstance(value, pd.Timestamp) else pd.Timestamp(value)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize(TAIPEI_TZ)
+        else:
+            ts = ts.tz_convert(TAIPEI_TZ)
+        return max(0.0, (now_taipei() - ts.to_pydatetime()).total_seconds())
+    except Exception:
+        return None
 
 
 def normalize_symbols(raw: str) -> list[str]:
@@ -104,12 +118,7 @@ def normalize_fugle_api_key(raw_key: str | None) -> tuple[str | None, str]:
 
 def build_mock_snapshot(symbols: list[str]) -> dict[str, dict[str, Any]]:
     snapshots: dict[str, dict[str, Any]] = {}
-    base_prices = {
-        "2330": 812.0,
-        "2317": 149.5,
-        "0050": 193.2,
-        "2454": 1220.0,
-    }
+    base_prices = {"2330": 812.0, "2317": 149.5, "0050": 193.2, "2454": 1220.0}
     for idx, symbol in enumerate(symbols):
         base = base_prices.get(symbol, 100.0 + idx * 10)
         bids = [{"price": round(base - 0.5 - i * 0.5, 2), "size": 100 * (i + 1)} for i in range(5)]
@@ -140,36 +149,19 @@ def build_mock_snapshot(symbols: list[str]) -> dict[str, dict[str, Any]]:
 @st.cache_data(ttl=15, show_spinner=False)
 def test_rest_quote(api_key: str, symbol: str) -> dict[str, Any]:
     if RestClient is None:
-        return {
-            "ok": False,
-            "message": "RestClient 不可用，fugle-marketdata 套件可能未正確安裝。",
-            "data": None,
-        }
-
+        return {"ok": False, "message": "RestClient 不可用，fugle-marketdata 套件可能未正確安裝。", "data": None}
     try:
         client = RestClient(api_key=api_key)
         quote = client.stock.intraday.quote(symbol=symbol)
-        return {
-            "ok": True,
-            "message": f"REST 測試成功：已取得 {symbol} 報價。",
-            "data": quote,
-        }
+        return {"ok": True, "message": f"REST 測試成功：已取得 {symbol} 報價。", "data": quote}
     except Exception as exc:
-        return {
-            "ok": False,
-            "message": f"REST 測試失敗：{exc}",
-            "data": None,
-        }
+        return {"ok": False, "message": f"REST 測試失敗：{exc}", "data": None}
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_benchmark_data() -> dict[str, Any]:
     if yf is None:
-        return {
-            "ok": False,
-            "message": "yfinance 套件未安裝，無法載入全球指數參考。",
-            "items": [],
-        }
+        return {"ok": False, "message": "yfinance 套件未安裝，無法載入全球指數參考。", "items": []}
 
     items: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -189,18 +181,17 @@ def fetch_benchmark_data() -> dict[str, Any]:
                 raise ValueError("查無價格資料")
 
             last_price = float(close_series.iloc[-1])
-
             previous_close = None
             fast_info = getattr(ticker, "fast_info", None)
             if fast_info:
                 previous_close = fast_info.get("previousClose") or fast_info.get("previous_close")
-
             if previous_close in (None, 0):
                 previous_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else last_price
 
             change = last_price - float(previous_close)
             change_pct = 0.0 if previous_close == 0 else (change / float(previous_close)) * 100
             timestamp = close_series.index[-1]
+            age_sec = benchmark_age_seconds(timestamp)
 
             items.append(
                 {
@@ -211,6 +202,9 @@ def fetch_benchmark_data() -> dict[str, Any]:
                     "change": round(change, 2),
                     "change_pct": round(change_pct, 2),
                     "time": format_benchmark_time(timestamp),
+                    "raw_time": timestamp,
+                    "age_seconds": age_sec,
+                    "stale": False if age_sec is None else age_sec >= BENCHMARK_STALE_SECONDS,
                 }
             )
         except Exception as exc:
@@ -224,13 +218,15 @@ def fetch_benchmark_data() -> dict[str, Any]:
                     "change": None,
                     "change_pct": None,
                     "time": "-",
+                    "raw_time": None,
+                    "age_seconds": None,
+                    "stale": True,
                 }
             )
 
     message = "全球指數參考載入成功。"
     if failures:
         message = "部分全球指數參考載入失敗：" + " | ".join(failures[:3])
-
     return {"ok": len(failures) < len(BENCHMARK_SYMBOLS), "message": message, "items": items}
 
 
@@ -254,12 +250,10 @@ def book_level_map(levels: list[dict[str, Any]]) -> dict[float, int]:
 def summarise_book(book: dict[str, Any] | None) -> dict[str, Any] | None:
     if not book:
         return None
-
     bids = book.get("bids", [])
     asks = book.get("asks", [])
     bid_total, bid_near3 = book_totals(bids)
     ask_total, ask_near3 = book_totals(asks)
-
     return {
         "time": float(book.get("time") or now_taipei().timestamp()),
         "bid_total": bid_total,
@@ -409,7 +403,6 @@ class FugleRealtimeStore:
 
         prev = state.book_history[-2]
         curr = state.book_history[-1]
-
         bid_delta = curr["bid_total"] - prev["bid_total"]
         ask_delta = curr["ask_total"] - prev["ask_total"]
 
@@ -962,6 +955,8 @@ def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
         symbol = item.get("symbol", "-")
         note = item.get("note", "參考")
         timestamp = item.get("time", "-")
+        stale = item.get("stale", True)
+        age_seconds = item.get("age_seconds")
 
         if price is None:
             price_text = "-"
@@ -972,7 +967,10 @@ def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
             price_text = f"{price:,.2f}"
 
         st.metric(label, price_text, delta=delta)
-        st.caption(f"{timestamp} | {symbol}")
+        st.caption(f"最後更新 {timestamp} | {symbol}")
+        if stale:
+            age_text = f"{int(age_seconds)} 秒" if age_seconds is not None else "未知"
+            st.caption(f"來源未更新：{age_text}")
         st.caption(note)
 
     if benchmark_result.get("message"):
@@ -988,7 +986,7 @@ def update_index_shock_signals(benchmark_result: dict[str, Any]) -> list[SignalE
         st.session_state.index_signal_cooldowns = {}
 
     twii_item = next((item for item in benchmark_result.get("items", []) if item.get("symbol") == "^TWII"), None)
-    if not twii_item or twii_item.get("price") is None:
+    if not twii_item or twii_item.get("price") is None or twii_item.get("stale"):
         return list(st.session_state.index_signal_events)
 
     now_ts = now_taipei().timestamp()
@@ -1004,7 +1002,6 @@ def update_index_shock_signals(benchmark_result: dict[str, Any]) -> list[SignalE
         change_pct = 0.0 if base_price == 0 else (latest_price - base_price) / base_price * 100
         cooldown_key = "twii_shock"
         last_emitted = st.session_state.index_signal_cooldowns.get(cooldown_key, 0.0)
-
         if abs(change_pct) >= 0.35 and now_ts - last_emitted >= 20:
             direction = "偏多" if change_pct > 0 else "偏空"
             message = f"台灣加權指數 15 秒變動 {change_pct:+.2f}%，大盤出現明顯 {direction} 異動。"
@@ -1122,6 +1119,7 @@ for tab, symbol in zip(tabs, symbols):
             signal_events = symbol_data.get("signal_events", [])
         else:
             symbol_data = snapshots.get(symbol, {})
+            symbol_data["trade_history"] = list(symbol_data.get("trades", []))
             signal_events = demo_signals.get(symbol, [])
 
         summary = symbol_data.get("book_summary")
@@ -1158,6 +1156,8 @@ with st.expander("部署說明"):
         - 本系統使用官方 `fugle-marketdata` Python SDK 串接台股即時行情。
         - 原始碼可放在 GitHub，並由 Streamlit Community Cloud 直接部署。
         - 全球指數區為參考用途，可能為延遲報價，不建議直接作為交易依據。
+        - 若左側全球指數長時間未更新，頁面會顯示「來源未更新」，表示 Yahoo/yfinance 來源暫時沒有新值，不代表你的台股主監控程式故障。
         - 異常訊號屬規則式監控，適合盤中輔助判讀，不代表保證性的買賣建議。
         """
     )
+```
