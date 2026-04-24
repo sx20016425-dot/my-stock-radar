@@ -1223,7 +1223,32 @@ def render_signal_panel(symbol: str, signal_events: list[SignalEvent]) -> None:
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=SIGNAL_PANEL_HEIGHT)
 
 
-def render_book_summary(summary: dict[str, Any] | None) -> None:
+def build_price_volume_distribution(trade_history: list[dict[str, Any]]) -> pd.DataFrame:
+    distribution: dict[float, dict[str, Any]] = {}
+    for item in trade_history:
+        price = safe_float(item.get("price"))
+        size = int(item.get("size") or 0)
+        if price is None or size <= 0:
+            continue
+        bucket = distribution.setdefault(price, {"成交數量": 0, "成交筆數": 0})
+        bucket["成交數量"] += size
+        bucket["成交筆數"] += 1
+
+    if not distribution:
+        return pd.DataFrame()
+
+    rows = [
+        {
+            "成交價": f"{price:.2f}",
+            "成交數量": values["成交數量"],
+            "成交筆數": values["成交筆數"],
+        }
+        for price, values in sorted(distribution.items(), key=lambda item: item[0], reverse=True)
+    ]
+    return pd.DataFrame(rows)
+
+
+def render_book_summary(summary: dict[str, Any] | None, trade_history: list[dict[str, Any]]) -> None:
     st.markdown('<div class="panel-title">五檔結構摘要</div>', unsafe_allow_html=True)
     cols = st.columns(4)
     if not summary:
@@ -1237,6 +1262,13 @@ def render_book_summary(summary: dict[str, Any] | None) -> None:
     cols[1].metric("賣盤總量", f"{int(summary['ask_total']):,}")
     cols[2].metric("買前三檔占比", f"{summary['bid_near3_ratio']:.0%}")
     cols[3].metric("賣前三檔占比", f"{summary['ask_near3_ratio']:.0%}")
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="panel-title" style="font-size:1.05rem;">當日成交分價與數量</div>', unsafe_allow_html=True)
+    distribution_df = build_price_volume_distribution(trade_history)
+    if distribution_df.empty:
+        render_empty_box("尚未累積足夠逐筆成交資料。", medium=True)
+        return
+    st.dataframe(distribution_df, width="stretch", hide_index=True, height=220)
 
 
 def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
@@ -1539,7 +1571,7 @@ for tab, symbol in zip(tabs, symbols):
                 render_opening_panel(symbol, symbol_data)
 
         with st.container(border=True):
-            render_book_summary(symbol_data.get("book_summary"))
+            render_book_summary(symbol_data.get("book_summary"), symbol_data.get("trade_history", []))
 
 if refresh_seconds > 0:
     time.sleep(refresh_seconds)
