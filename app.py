@@ -1080,19 +1080,47 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
         render_empty_box("尚未收到即時成交明細。", tall=True)
         return
 
-    rows = [
-        {
-            "時間": format_fugle_time(item.get("time")),
-            "成交價": item.get("price"),
-            "成交量": item.get("size"),
-            "買價": item.get("bid"),
-            "賣價": item.get("ask"),
-            "累積量": item.get("volume"),
-            "序號": item.get("serial"),
-        }
-        for item in list(trades)[:20]
-    ]
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=TRADE_TAPE_HEIGHT)
+    rows = []
+    for item in list(trades)[:20]:
+        bid = item.get("bid")
+        ask = item.get("ask")
+        price = item.get("price")
+        side = "neutral"
+        if price is not None and ask is not None and price >= ask:
+            side = "outer"
+        elif price is not None and bid is not None and price <= bid:
+            side = "inner"
+
+        rows.append(
+            {
+                "時間": format_fugle_time(item.get("time")),
+                "買價": bid,
+                "賣價": ask,
+                "成交價格": price,
+                "數量": item.get("size"),
+                "_side": side,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+
+    def style_trade_row(row: pd.Series) -> list[str]:
+        side = row.get("_side")
+        styles = [""] * len(row)
+        color = ""
+        if side == "outer":
+            color = "color: #ff4d4f; font-weight: 700;"
+        elif side == "inner":
+            color = "color: #34c759; font-weight: 700;"
+
+        columns = list(row.index)
+        for target_col in ("成交價格", "數量"):
+            if target_col in columns:
+                styles[columns.index(target_col)] = color
+        return styles
+
+    styled = df.style.apply(style_trade_row, axis=1).hide(axis="columns", subset=["_side"])
+    st.dataframe(styled, width="stretch", hide_index=True, height=TRADE_TAPE_HEIGHT)
 
 
 def render_signal_panel(symbol: str, signal_events: list[SignalEvent]) -> None:
