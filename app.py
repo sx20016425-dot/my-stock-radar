@@ -1625,9 +1625,9 @@ with st.sidebar:
     st.header("監控設定")
     symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
     symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
-    refresh_seconds = st.slider("刷新秒數", min_value=1, max_value=10, value=1)
+    refresh_seconds = st.slider("刷新秒數", min_value=0.2, max_value=10.0, value=0.5, step=0.1)
     source_mode = st.selectbox("資料源模式", ["自動", "Fugle", "示範資料"], index=0)
-    st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。")
+    st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。刷新過快可能讓 Streamlit Cloud 比較吃資源。")
 
 raw_api_key, api_key_source = get_raw_api_key()
 api_key, api_key_note = normalize_fugle_api_key(raw_api_key)
