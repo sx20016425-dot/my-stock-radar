@@ -35,6 +35,10 @@ MAX_TRADE_HISTORY = 2000
 MAX_SIGNAL_EVENTS = 100
 BENCHMARK_STALE_SECONDS = 300
 UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
+TOP_LEVEL_MONITOR_COUNT = 3
+LEVEL_ABS_DELTA_THRESHOLD = 300
+LEVEL_RATIO_UP_THRESHOLD = 1.8
+LEVEL_RATIO_DOWN_THRESHOLD = 0.45
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_LOG_DIR = APP_DIR / "data_logs"
@@ -223,6 +227,15 @@ def book_level_map(levels: list[dict[str, Any]]) -> dict[float, int]:
             continue
         result[float(price)] = int(size or 0)
     return result
+
+
+def safe_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def summarise_book(book: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -503,6 +516,9 @@ class FugleRealtimeStore:
 
         prev = state.book_history[-2]
         curr = state.book_history[-1]
+        current_book = state.book or {}
+        current_bids = current_book.get("bids", [])
+        current_asks = current_book.get("asks", [])
         bid_delta = curr["bid_total"] - prev["bid_total"]
         ask_delta = curr["ask_total"] - prev["ask_total"]
 
@@ -529,6 +545,63 @@ class FugleRealtimeStore:
             self._emit_signal(symbol, state, "bid_front_loaded", "買盤", f"{symbol} 買盤前三檔占比提高到 {curr['bid_near3_ratio']:.0%}，近價承接明顯集中。", min(0.9, 0.45 + bid_ratio_jump * 2), {"bid_near3_ratio": curr["bid_near3_ratio"]})
         if ask_ratio_jump >= 0.18 and curr["ask_near3_ratio"] >= 0.62:
             self._emit_signal(symbol, state, "ask_front_loaded", "賣盤", f"{symbol} 賣盤前三檔占比提高到 {curr['ask_near3_ratio']:.0%}，近價賣壓集中。", min(0.9, 0.45 + ask_ratio_jump * 2), {"ask_near3_ratio": curr["ask_near3_ratio"]})
+
+        for idx in range(TOP_LEVEL_MONITOR_COUNT):
+            prev_bid_size = int(prev["bid_map"].get(safe_float(current_bids[idx].get("price")) if idx < len(current_bids) else None, 0))
+            curr_bid_level = current_bids[idx] if idx < len(current_bids) else {}
+            curr_bid_size = int(curr_bid_level.get("size", 0) or 0)
+            curr_bid_price = curr_bid_level.get("price")
+            bid_level_delta = curr_bid_size - prev_bid_size
+
+            if curr_bid_price not in (None, ""):
+                if prev_bid_size > 0 and curr_bid_size >= prev_bid_size * LEVEL_RATIO_UP_THRESHOLD and bid_level_delta >= LEVEL_ABS_DELTA_THRESHOLD:
+                    self._emit_signal(
+                        symbol,
+                        state,
+                        f"bid_level_{idx + 1}_stack_up",
+                        "買盤",
+                        f"{symbol} 買{idx + 1} ({curr_bid_price}) 掛單量瞬間增加 {bid_level_delta:,}，疑似逐檔堆量。",
+                        min(0.95, 0.5 + abs(bid_level_delta) / max(prev_bid_size, 1)),
+                        {"level": f"買{idx + 1}", "price": curr_bid_price, "delta": bid_level_delta},
+                    )
+                if prev_bid_size >= LEVEL_ABS_DELTA_THRESHOLD and curr_bid_size <= prev_bid_size * LEVEL_RATIO_DOWN_THRESHOLD and abs(bid_level_delta) >= LEVEL_ABS_DELTA_THRESHOLD:
+                    self._emit_signal(
+                        symbol,
+                        state,
+                        f"bid_level_{idx + 1}_pull",
+                        "買盤",
+                        f"{symbol} 買{idx + 1} ({curr_bid_price}) 掛單量快速減少 {abs(bid_level_delta):,}，疑似逐檔抽單。",
+                        min(0.95, 0.5 + abs(bid_level_delta) / max(prev_bid_size, 1)),
+                        {"level": f"買{idx + 1}", "price": curr_bid_price, "delta": bid_level_delta},
+                    )
+
+            prev_ask_size = int(prev["ask_map"].get(safe_float(current_asks[idx].get("price")) if idx < len(current_asks) else None, 0))
+            curr_ask_level = current_asks[idx] if idx < len(current_asks) else {}
+            curr_ask_size = int(curr_ask_level.get("size", 0) or 0)
+            curr_ask_price = curr_ask_level.get("price")
+            ask_level_delta = curr_ask_size - prev_ask_size
+
+            if curr_ask_price not in (None, ""):
+                if prev_ask_size > 0 and curr_ask_size >= prev_ask_size * LEVEL_RATIO_UP_THRESHOLD and ask_level_delta >= LEVEL_ABS_DELTA_THRESHOLD:
+                    self._emit_signal(
+                        symbol,
+                        state,
+                        f"ask_level_{idx + 1}_stack_up",
+                        "賣盤",
+                        f"{symbol} 賣{idx + 1} ({curr_ask_price}) 掛單量瞬間增加 {ask_level_delta:,}，疑似逐檔壓單。",
+                        min(0.95, 0.5 + abs(ask_level_delta) / max(prev_ask_size, 1)),
+                        {"level": f"賣{idx + 1}", "price": curr_ask_price, "delta": ask_level_delta},
+                    )
+                if prev_ask_size >= LEVEL_ABS_DELTA_THRESHOLD and curr_ask_size <= prev_ask_size * LEVEL_RATIO_DOWN_THRESHOLD and abs(ask_level_delta) >= LEVEL_ABS_DELTA_THRESHOLD:
+                    self._emit_signal(
+                        symbol,
+                        state,
+                        f"ask_level_{idx + 1}_pull",
+                        "賣盤",
+                        f"{symbol} 賣{idx + 1} ({curr_ask_price}) 掛單量快速減少 {abs(ask_level_delta):,}，疑似逐檔抽單。",
+                        min(0.95, 0.5 + abs(ask_level_delta) / max(prev_ask_size, 1)),
+                        {"level": f"賣{idx + 1}", "price": curr_ask_price, "delta": ask_level_delta},
+                    )
 
         if current_trade is None:
             return
