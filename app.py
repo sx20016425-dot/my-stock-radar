@@ -47,7 +47,6 @@ TRADE_TAPE_HEIGHT = 280
 SIGNAL_PANEL_HEIGHT = 280
 OPEN_PANEL_HEIGHT = 180
 SUMMARY_PANEL_HEIGHT = 180
-OPENING_PANEL_SPACER_HEIGHT = 230
 
 BENCHMARK_SYMBOLS = [
     {"label": "台灣加權指數", "symbol": "^TWII", "note": "現貨指數參考"},
@@ -1132,7 +1131,6 @@ def render_book_summary(summary: dict[str, Any] | None) -> None:
 
 
 def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
-    st.markdown(f"<div style='height: {OPENING_PANEL_SPACER_HEIGHT}px;'></div>", unsafe_allow_html=True)
     st.markdown(f'<div class="panel-title">{symbol} 開盤追蹤</div>', unsafe_allow_html=True)
     open_trade = symbol_data.get("open_trade")
     last_trade = symbol_data.get("last_trade")
@@ -1145,7 +1143,7 @@ def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
         cols[1].metric("目前相對開盤", "-")
         cols[2].metric("盤中高點", f"{session_high:,.2f}" if session_high else "-")
         cols[3].metric("盤中低點", f"{session_low:,.2f}" if session_low else "-")
-        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
         return
 
     open_price = float(open_trade.get("price") or 0)
@@ -1155,7 +1153,7 @@ def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
     cols[1].metric("目前相對開盤", f"{move_pct:+.2f}%")
     cols[2].metric("盤中高點", f"{session_high:,.2f}" if session_high else "-")
     cols[3].metric("盤中低點", f"{session_low:,.2f}" if session_low else "-")
-    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
 
 
 def render_decision_panel(symbol: str, symbol_data: dict[str, Any], index_events: list[SignalEvent]) -> None:
