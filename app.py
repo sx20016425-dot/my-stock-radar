@@ -61,6 +61,8 @@ BENCHMARK_SYMBOLS = [
     {"label": "標普期貨參考", "symbol": "ES=F", "note": "期貨參考"},
 ]
 
+LOGIN_HELP_TEXT = "請輸入你核發的登入序號。未通過驗證前，無法查看監控資料。"
+
 
 def inject_custom_css() -> None:
     st.markdown(
@@ -104,6 +106,14 @@ def inject_custom_css() -> None:
         }
         .placeholder-box.medium {
             height: 150px;
+        }
+        .login-shell {
+            max-width: 520px;
+            margin: 4rem auto 0 auto;
+            border: 1px solid rgba(128,128,128,0.25);
+            border-radius: 18px;
+            padding: 1.2rem 1.2rem 1rem 1.2rem;
+            background: rgba(255,255,255,0.03);
         }
         </style>
         """,
@@ -210,6 +220,78 @@ def get_raw_api_key() -> tuple[str | None, str]:
     if env_value:
         return env_value, "環境變數"
     return None, "未載入"
+
+
+def get_access_key_config() -> tuple[set[str], str]:
+    raw = None
+    source = "未設定"
+    if "ACCESS_KEYS" in st.secrets:
+        raw = st.secrets["ACCESS_KEYS"]
+        source = "Streamlit secrets"
+    else:
+        env_value = os.getenv("ACCESS_KEYS")
+        if env_value:
+            raw = env_value
+            source = "環境變數"
+
+    allowed_keys: set[str] = set()
+    if isinstance(raw, (list, tuple)):
+        allowed_keys = {str(item).strip() for item in raw if str(item).strip()}
+    elif isinstance(raw, dict):
+        allowed_keys = {
+            str(key).strip()
+            for key, value in raw.items()
+            if str(key).strip() and str(value).strip().lower() in {"active", "enabled", "true", "1", "yes"}
+        }
+    elif isinstance(raw, str):
+        parts = [item.strip() for item in raw.replace(";", ",").replace("\n", ",").split(",")]
+        allowed_keys = {item for item in parts if item}
+
+    return allowed_keys, source
+
+
+def mask_access_key(value: str) -> str:
+    if len(value) <= 6:
+        return "*" * len(value)
+    return f"{value[:3]}***{value[-2:]}"
+
+
+def is_logged_in() -> bool:
+    return bool(st.session_state.get("access_granted"))
+
+
+def logout() -> None:
+    st.session_state["access_granted"] = False
+    st.session_state["access_key_value"] = ""
+    st.session_state["access_key_masked"] = ""
+
+
+def render_login_gate() -> None:
+    allowed_keys, source = get_access_key_config()
+    if not allowed_keys:
+        st.error("尚未設定 ACCESS_KEYS，無法啟用登入驗證。")
+        st.stop()
+
+    st.markdown('<div class="login-shell">', unsafe_allow_html=True)
+    st.title("股票雷達登入")
+    st.caption(LOGIN_HELP_TEXT)
+    with st.form("access_gate_form", clear_on_submit=False):
+        input_key = st.text_input("登入序號", type="password", placeholder="請輸入審核通過的序號")
+        submitted = st.form_submit_button("進入系統", use_container_width=True)
+
+    if submitted:
+        cleaned = input_key.strip()
+        if cleaned in allowed_keys:
+            st.session_state["access_granted"] = True
+            st.session_state["access_key_value"] = cleaned
+            st.session_state["access_key_masked"] = mask_access_key(cleaned)
+            st.rerun()
+        else:
+            st.error("登入序號無效，請確認是否為你核發的有效序號。")
+
+    st.caption(f"序號來源：{source}，目前可用序號數：{len(allowed_keys)}")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
 
 
 def book_totals(levels: list[dict[str, Any]]) -> tuple[float, int]:
@@ -1469,10 +1551,23 @@ st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", 
 inject_custom_css()
 ensure_log_dirs()
 
+if "access_granted" not in st.session_state:
+    st.session_state["access_granted"] = False
+if "access_key_masked" not in st.session_state:
+    st.session_state["access_key_masked"] = ""
+
+if not is_logged_in():
+    render_login_gate()
+
 st.title("台股即時監控台")
 st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、開盤追蹤、異常訊號與盤中資料落地監控頁面。")
 
 with st.sidebar:
+    st.success(f"已登入：{st.session_state.get('access_key_masked', '-')}")
+    if st.button("登出", use_container_width=True):
+        logout()
+        st.rerun()
+    st.markdown("---")
     st.header("監控設定")
     symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
     symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
