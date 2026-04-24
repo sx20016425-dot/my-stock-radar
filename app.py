@@ -1,6 +1,7 @@
 import base64
 import binascii
 import csv
+import json
 import os
 import re
 import threading
@@ -223,6 +224,46 @@ def get_raw_api_key() -> tuple[str | None, str]:
     return None, "未載入"
 
 
+def normalize_secret_key_values(raw: Any) -> set[str]:
+    values: set[str] = set()
+    if raw in (None, ""):
+        return values
+
+    if isinstance(raw, (list, tuple, set)):
+        return {str(item).strip() for item in raw if str(item).strip()}
+
+    if isinstance(raw, Mapping) or hasattr(raw, "items"):
+        for key, value in raw.items():
+            key_text = str(key).strip()
+            value_text = str(value).strip().lower()
+            if key_text and value_text in {"active", "enabled", "true", "1", "yes"}:
+                values.add(key_text)
+        return values
+
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return values
+
+        for parser in (json.loads, __import__("ast").literal_eval):
+            try:
+                parsed = parser(text)
+                nested = normalize_secret_key_values(parsed)
+                if nested:
+                    return nested
+            except Exception:
+                pass
+
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+
+        parts = [item.strip().strip("\"'") for item in text.replace(";", ",").replace("\n", ",").split(",")]
+        return {item for item in parts if item}
+
+    text = str(raw).strip()
+    return {text} if text else set()
+
+
 def get_access_key_config() -> tuple[set[str], str]:
     raw = None
     source = "未設定"
@@ -234,27 +275,7 @@ def get_access_key_config() -> tuple[set[str], str]:
         if env_value:
             raw = env_value
             source = "環境變數"
-
-    allowed_keys: set[str] = set()
-    if isinstance(raw, (list, tuple)):
-        allowed_keys = {str(item).strip() for item in raw if str(item).strip()}
-    elif isinstance(raw, Mapping):
-        allowed_keys = {
-            str(key).strip()
-            for key, value in raw.items()
-            if str(key).strip() and str(value).strip().lower() in {"active", "enabled", "true", "1", "yes"}
-        }
-    elif hasattr(raw, "items"):
-        allowed_keys = {
-            str(key).strip()
-            for key, value in raw.items()
-            if str(key).strip() and str(value).strip().lower() in {"active", "enabled", "true", "1", "yes"}
-        }
-    elif isinstance(raw, str):
-        parts = [item.strip() for item in raw.replace(";", ",").replace("\n", ",").split(",")]
-        allowed_keys = {item for item in parts if item}
-
-    return allowed_keys, source
+    return normalize_secret_key_values(raw), source
 
 
 def get_admin_access_key_config() -> tuple[set[str], str]:
@@ -268,27 +289,7 @@ def get_admin_access_key_config() -> tuple[set[str], str]:
         if env_value:
             raw = env_value
             source = "環境變數"
-
-    admin_keys: set[str] = set()
-    if isinstance(raw, (list, tuple)):
-        admin_keys = {str(item).strip() for item in raw if str(item).strip()}
-    elif isinstance(raw, Mapping):
-        admin_keys = {
-            str(key).strip()
-            for key, value in raw.items()
-            if str(key).strip() and str(value).strip().lower() in {"active", "enabled", "true", "1", "yes"}
-        }
-    elif hasattr(raw, "items"):
-        admin_keys = {
-            str(key).strip()
-            for key, value in raw.items()
-            if str(key).strip() and str(value).strip().lower() in {"active", "enabled", "true", "1", "yes"}
-        }
-    elif isinstance(raw, str):
-        parts = [item.strip() for item in raw.replace(";", ",").replace("\n", ",").split(",")]
-        admin_keys = {item for item in parts if item}
-
-    return admin_keys, source
+    return normalize_secret_key_values(raw), source
 
 
 def mask_access_key(value: str) -> str:
