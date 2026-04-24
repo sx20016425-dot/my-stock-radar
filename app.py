@@ -299,11 +299,11 @@ def mask_access_key(value: str) -> str:
 
 
 def is_logged_in() -> bool:
-    return bool(st.session_state.get("access_granted"))
+    return True
 
 
 def is_admin() -> bool:
-    return st.session_state.get("access_role") == "admin"
+    return True
 
 
 def logout() -> None:
@@ -1618,19 +1618,10 @@ if "access_key_masked" not in st.session_state:
 if "access_role" not in st.session_state:
     st.session_state["access_role"] = ""
 
-if not is_logged_in():
-    render_login_gate()
-
 st.title("台股即時監控台")
 st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、開盤追蹤、異常訊號與盤中資料落地監控頁面。")
 
 with st.sidebar:
-    st.success(f"已登入序號：{st.session_state.get('access_key_masked', '-')}")
-    st.caption("管理者" if is_admin() else "一般使用者")
-    if st.button("登出", use_container_width=True):
-        logout()
-        st.rerun()
-    st.markdown("---")
     st.header("監控設定")
     symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
     symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
