@@ -31,8 +31,9 @@ MAX_RECENT_TRADES = 50
 MAX_BOOK_HISTORY = 300
 MAX_TRADE_HISTORY = 2000
 MAX_SIGNAL_EVENTS = 100
-UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
 BENCHMARK_STALE_SECONDS = 300
+UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
+
 BENCHMARK_SYMBOLS = [
     {"label": "台灣加權指數", "symbol": "^TWII", "note": "現貨指數參考"},
     {"label": "日經225", "symbol": "^N225", "note": "現貨指數參考"},
@@ -116,118 +117,13 @@ def normalize_fugle_api_key(raw_key: str | None) -> tuple[str | None, str]:
     return raw_key, "使用原始 API key"
 
 
-def build_mock_snapshot(symbols: list[str]) -> dict[str, dict[str, Any]]:
-    snapshots: dict[str, dict[str, Any]] = {}
-    base_prices = {"2330": 812.0, "2317": 149.5, "0050": 193.2, "2454": 1220.0}
-    for idx, symbol in enumerate(symbols):
-        base = base_prices.get(symbol, 100.0 + idx * 10)
-        bids = [{"price": round(base - 0.5 - i * 0.5, 2), "size": 100 * (i + 1)} for i in range(5)]
-        asks = [{"price": round(base + 0.5 + i * 0.5, 2), "size": 120 * (i + 1)} for i in range(5)]
-        trades = deque(
-            [
-                {
-                    "time": now_taipei().timestamp() - (9 - i),
-                    "price": round(base + (i % 3 - 1) * 0.5, 2),
-                    "size": 100 * (i + 1),
-                    "bid": bids[0]["price"],
-                    "ask": asks[0]["price"],
-                    "volume": 1000 + i * 100,
-                    "serial": i + 1,
-                }
-                for i in range(10)
-            ],
-            maxlen=MAX_RECENT_TRADES,
-        )
-        snapshots[symbol] = {
-            "book": {"symbol": symbol, "bids": bids, "asks": asks, "time": now_taipei().timestamp()},
-            "trades": trades,
-            "last_trade": trades[0],
-        }
-    return snapshots
-
-
-@st.cache_data(ttl=15, show_spinner=False)
-def test_rest_quote(api_key: str, symbol: str) -> dict[str, Any]:
-    if RestClient is None:
-        return {"ok": False, "message": "RestClient 不可用，fugle-marketdata 套件可能未正確安裝。", "data": None}
-    try:
-        client = RestClient(api_key=api_key)
-        quote = client.stock.intraday.quote(symbol=symbol)
-        return {"ok": True, "message": f"REST 測試成功：已取得 {symbol} 報價。", "data": quote}
-    except Exception as exc:
-        return {"ok": False, "message": f"REST 測試失敗：{exc}", "data": None}
-
-
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_benchmark_data() -> dict[str, Any]:
-    if yf is None:
-        return {"ok": False, "message": "yfinance 套件未安裝，無法載入全球指數參考。", "items": []}
-
-    items: list[dict[str, Any]] = []
-    failures: list[str] = []
-
-    for config in BENCHMARK_SYMBOLS:
-        label = config["label"]
-        symbol = config["symbol"]
-        note = config["note"]
-        try:
-            ticker = yf.Ticker(symbol)
-            history = ticker.history(period="2d", interval="1m", auto_adjust=False, prepost=True)
-            if history.empty:
-                history = ticker.history(period="5d", interval="1d", auto_adjust=False)
-
-            close_series = history["Close"].dropna()
-            if close_series.empty:
-                raise ValueError("查無價格資料")
-
-            last_price = float(close_series.iloc[-1])
-            previous_close = None
-            fast_info = getattr(ticker, "fast_info", None)
-            if fast_info:
-                previous_close = fast_info.get("previousClose") or fast_info.get("previous_close")
-            if previous_close in (None, 0):
-                previous_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else last_price
-
-            change = last_price - float(previous_close)
-            change_pct = 0.0 if previous_close == 0 else (change / float(previous_close)) * 100
-            timestamp = close_series.index[-1]
-            age_sec = benchmark_age_seconds(timestamp)
-
-            items.append(
-                {
-                    "label": label,
-                    "symbol": symbol,
-                    "note": note,
-                    "price": round(last_price, 2),
-                    "change": round(change, 2),
-                    "change_pct": round(change_pct, 2),
-                    "time": format_benchmark_time(timestamp),
-                    "raw_time": timestamp,
-                    "age_seconds": age_sec,
-                    "stale": False if age_sec is None else age_sec >= BENCHMARK_STALE_SECONDS,
-                }
-            )
-        except Exception as exc:
-            failures.append(f"{label}: {exc}")
-            items.append(
-                {
-                    "label": label,
-                    "symbol": symbol,
-                    "note": note,
-                    "price": None,
-                    "change": None,
-                    "change_pct": None,
-                    "time": "-",
-                    "raw_time": None,
-                    "age_seconds": None,
-                    "stale": True,
-                }
-            )
-
-    message = "全球指數參考載入成功。"
-    if failures:
-        message = "部分全球指數參考載入失敗：" + " | ".join(failures[:3])
-    return {"ok": len(failures) < len(BENCHMARK_SYMBOLS), "message": message, "items": items}
+def get_raw_api_key() -> tuple[str | None, str]:
+    if "FUGLE_API_KEY" in st.secrets:
+        return st.secrets["FUGLE_API_KEY"], "Streamlit secrets"
+    env_value = os.getenv("FUGLE_API_KEY")
+    if env_value:
+        return env_value, "環境變數"
+    return None, "未載入"
 
 
 def book_totals(levels: list[dict[str, Any]]) -> tuple[float, int]:
@@ -250,10 +146,12 @@ def book_level_map(levels: list[dict[str, Any]]) -> dict[float, int]:
 def summarise_book(book: dict[str, Any] | None) -> dict[str, Any] | None:
     if not book:
         return None
+
     bids = book.get("bids", [])
     asks = book.get("asks", [])
     bid_total, bid_near3 = book_totals(bids)
     ask_total, ask_near3 = book_totals(asks)
+
     return {
         "time": float(book.get("time") or now_taipei().timestamp()),
         "bid_total": bid_total,
@@ -535,6 +433,7 @@ class FugleRealtimeStore:
         if isinstance(message, str):
             try:
                 import json
+
                 payload = json.loads(message)
             except Exception:
                 return
@@ -707,31 +606,209 @@ def get_store(api_key: str | None) -> FugleRealtimeStore:
     return store
 
 
-def build_demo_signals(symbols: list[str], snapshots: dict[str, dict[str, Any]]) -> dict[str, list[SignalEvent]]:
-    result: dict[str, list[SignalEvent]] = {}
+def build_mock_snapshot(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    snapshots: dict[str, dict[str, Any]] = {}
+    base_prices = {"2330": 812.0, "2317": 149.5, "0050": 193.2, "2454": 1220.0}
+
     for idx, symbol in enumerate(symbols):
-        if symbol not in snapshots:
-            result[symbol] = []
-            continue
+        base = base_prices.get(symbol, 100.0 + idx * 10)
+        bids = [{"price": round(base - 0.5 - i * 0.5, 2), "size": 100 * (i + 1)} for i in range(5)]
+        asks = [{"price": round(base + 0.5 + i * 0.5, 2), "size": 120 * (i + 1)} for i in range(5)]
+        trades = deque(
+            [
+                {
+                    "time": now_taipei().timestamp() - (9 - i),
+                    "price": round(base + (i % 3 - 1) * 0.5, 2),
+                    "size": 100 * (i + 1),
+                    "bid": bids[0]["price"],
+                    "ask": asks[0]["price"],
+                    "volume": 1000 + i * 100,
+                    "serial": i + 1,
+                }
+                for i in range(10)
+            ],
+            maxlen=MAX_RECENT_TRADES,
+        )
+        trade_history = deque(
+            [
+                {
+                    "time": item["time"],
+                    "price": item["price"],
+                    "size": item["size"],
+                    "serial": item["serial"],
+                }
+                for item in trades
+            ],
+            maxlen=MAX_TRADE_HISTORY,
+        )
+        summary = summarise_book({"symbol": symbol, "bids": bids, "asks": asks, "time": now_taipei().timestamp()})
+        signal_events = deque(maxlen=MAX_SIGNAL_EVENTS)
         if idx % 2 == 0:
-            result[symbol] = [
-                SignalEvent(
-                    event_type="bid_stack_up",
-                    side="買盤",
-                    message=f"{symbol} 買盤近價掛單集中，示範訊號。",
-                    score=0.74,
-                )
-            ]
+            signal_events.appendleft(
+                SignalEvent("bid_stack_up", "買盤", f"{symbol} 買盤近價掛單集中，示範訊號。", 0.74)
+            )
         else:
-            result[symbol] = [
+            signal_events.appendleft(
+                SignalEvent("ask_pull", "賣盤", f"{symbol} 賣盤五檔快速減少，示範訊號。", 0.68)
+            )
+
+        snapshots[symbol] = {
+            "book": {"symbol": symbol, "bids": bids, "asks": asks, "time": now_taipei().timestamp()},
+            "trades": list(trades),
+            "last_trade": trades[0],
+            "signal_events": list(signal_events),
+            "book_summary": summary,
+            "open_trade": trades[-1],
+            "session_high": max(item["price"] for item in trades),
+            "session_low": min(item["price"] for item in trades),
+            "trade_history": list(trade_history),
+        }
+
+    return snapshots
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def test_rest_quote(api_key: str, symbol: str) -> dict[str, Any]:
+    if RestClient is None:
+        return {
+            "ok": False,
+            "message": "RestClient 不可用，fugle-marketdata 套件可能未正確安裝。",
+            "data": None,
+        }
+
+    try:
+        client = RestClient(api_key=api_key)
+        quote = client.stock.intraday.quote(symbol=symbol)
+        return {
+            "ok": True,
+            "message": f"REST 測試成功：已取得 {symbol} 報價。",
+            "data": quote,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"REST 測試失敗：{exc}",
+            "data": None,
+        }
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_benchmark_data() -> dict[str, Any]:
+    if yf is None:
+        return {
+            "ok": False,
+            "message": "yfinance 套件未安裝，無法載入全球指數參考。",
+            "items": [],
+        }
+
+    items: list[dict[str, Any]] = []
+    failures: list[str] = []
+
+    for config in BENCHMARK_SYMBOLS:
+        label = config["label"]
+        symbol = config["symbol"]
+        note = config["note"]
+        try:
+            ticker = yf.Ticker(symbol)
+            history = ticker.history(period="2d", interval="1m", auto_adjust=False, prepost=True)
+            if history.empty:
+                history = ticker.history(period="5d", interval="1d", auto_adjust=False)
+
+            close_series = history["Close"].dropna()
+            if close_series.empty:
+                raise ValueError("查無價格資料")
+
+            last_price = float(close_series.iloc[-1])
+            previous_close = None
+            fast_info = getattr(ticker, "fast_info", None)
+            if fast_info:
+                previous_close = fast_info.get("previousClose") or fast_info.get("previous_close")
+            if previous_close in (None, 0):
+                previous_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else last_price
+
+            change = last_price - float(previous_close)
+            change_pct = 0.0 if previous_close == 0 else (change / float(previous_close)) * 100
+            timestamp = close_series.index[-1]
+            age_seconds = benchmark_age_seconds(timestamp)
+
+            items.append(
+                {
+                    "label": label,
+                    "symbol": symbol,
+                    "note": note,
+                    "price": round(last_price, 2),
+                    "change": round(change, 2),
+                    "change_pct": round(change_pct, 2),
+                    "time": format_benchmark_time(timestamp),
+                    "age_seconds": age_seconds,
+                    "stale": False if age_seconds is None else age_seconds >= BENCHMARK_STALE_SECONDS,
+                }
+            )
+        except Exception as exc:
+            failures.append(f"{label}: {exc}")
+            items.append(
+                {
+                    "label": label,
+                    "symbol": symbol,
+                    "note": note,
+                    "price": None,
+                    "change": None,
+                    "change_pct": None,
+                    "time": "-",
+                    "age_seconds": None,
+                    "stale": True,
+                }
+            )
+
+    message = "全球指數參考載入成功。"
+    if failures:
+        message = "部分全球指數參考載入失敗：" + " | ".join(failures[:3])
+
+    return {"ok": len(failures) < len(BENCHMARK_SYMBOLS), "message": message, "items": items}
+
+
+def update_index_shock_signals(benchmark_result: dict[str, Any]) -> list[SignalEvent]:
+    if "index_signal_history" not in st.session_state:
+        st.session_state.index_signal_history = deque(maxlen=120)
+    if "index_signal_events" not in st.session_state:
+        st.session_state.index_signal_events = deque(maxlen=20)
+    if "index_signal_cooldowns" not in st.session_state:
+        st.session_state.index_signal_cooldowns = {}
+
+    twii_item = next((item for item in benchmark_result.get("items", []) if item.get("symbol") == "^TWII"), None)
+    if not twii_item or twii_item.get("price") is None or twii_item.get("stale"):
+        return list(st.session_state.index_signal_events)
+
+    now_ts = now_taipei().timestamp()
+    st.session_state.index_signal_history.append({"time": now_ts, "price": float(twii_item["price"])})
+    history = list(st.session_state.index_signal_history)
+    if len(history) < 2:
+        return list(st.session_state.index_signal_events)
+
+    recent_15s = [item for item in history if now_ts - item["time"] <= 15]
+    if len(recent_15s) >= 2:
+        base_price = recent_15s[0]["price"]
+        latest_price = recent_15s[-1]["price"]
+        change_pct = 0.0 if base_price == 0 else (latest_price - base_price) / base_price * 100
+        cooldown_key = "twii_shock"
+        last_emitted = st.session_state.index_signal_cooldowns.get(cooldown_key, 0.0)
+
+        if abs(change_pct) >= 0.35 and now_ts - last_emitted >= 20:
+            direction = "偏多" if change_pct > 0 else "偏空"
+            message = f"台灣加權指數 15 秒變動 {change_pct:+.2f}%，大盤出現明顯 {direction} 異動。"
+            score = min(0.95, 0.6 + abs(change_pct))
+            st.session_state.index_signal_events.appendleft(
                 SignalEvent(
-                    event_type="ask_pull",
-                    side="賣盤",
-                    message=f"{symbol} 賣盤五檔快速減少，示範訊號。",
-                    score=0.68,
+                    event_type="twii_shock",
+                    side="大盤",
+                    message=message,
+                    score=score,
+                    extra={"change_pct": change_pct},
                 )
-            ]
-    return result
+            )
+            st.session_state.index_signal_cooldowns[cooldown_key] = now_ts
+
+    return list(st.session_state.index_signal_events)
 
 
 def calc_symbol_signal_score(symbol_data: dict[str, Any], index_events: list[SignalEvent]) -> tuple[float, list[str]]:
@@ -741,12 +818,9 @@ def calc_symbol_signal_score(symbol_data: dict[str, Any], index_events: list[Sig
     for event in symbol_data.get("signal_events", [])[:5]:
         if event.side == "買盤":
             score += event.score
-            reasons.append(event.message)
         elif event.side == "賣盤":
             score -= event.score
-            reasons.append(event.message)
-        else:
-            reasons.append(event.message)
+        reasons.append(event.message)
 
     open_trade = symbol_data.get("open_trade")
     last_trade = symbol_data.get("last_trade")
@@ -783,6 +857,58 @@ def calc_symbol_signal_score(symbol_data: dict[str, Any], index_events: list[Sig
         reasons.append(event.message)
 
     return score, reasons[:6]
+
+
+def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
+    st.markdown("---")
+    st.subheader("全球指數參考")
+    st.caption("此區為參考數據，可能為延遲報價，非交易所即時成交。")
+
+    for item in benchmark_result.get("items", []):
+        label = item.get("label", "-")
+        price = item.get("price")
+        change = item.get("change")
+        change_pct = item.get("change_pct")
+        symbol = item.get("symbol", "-")
+        note = item.get("note", "參考")
+        timestamp = item.get("time", "-")
+        stale = item.get("stale", True)
+        age_seconds = item.get("age_seconds")
+
+        if price is None:
+            price_text = "-"
+            delta = "資料暫缺"
+        else:
+            sign = "+" if change is not None and change > 0 else ""
+            delta = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)" if change is not None and change_pct is not None else "-"
+            price_text = f"{price:,.2f}"
+
+        st.metric(label, price_text, delta=delta)
+        st.caption(f"最後更新 {timestamp} | {symbol}")
+        if stale:
+            age_text = f"{int(age_seconds)} 秒" if age_seconds is not None else "未知"
+            st.caption(f"來源未更新：{age_text}")
+        st.caption(note)
+
+    if benchmark_result.get("message"):
+        st.caption(benchmark_result["message"])
+
+
+def render_index_signal_panel(index_events: list[SignalEvent]) -> None:
+    st.subheader("大盤異動提示")
+    if not index_events:
+        st.info("目前尚未偵測到台灣加權指數的明顯急變。")
+        return
+
+    rows = [
+        {
+            "時間": event.created_at.strftime("%H:%M:%S"),
+            "強度": classify_severity(event.score),
+            "內容": event.message,
+        }
+        for event in index_events[:5]
+    ]
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def render_order_book(symbol: str, book: dict[str, Any] | None) -> None:
@@ -843,6 +969,25 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
+def render_signal_panel(symbol: str, signal_events: list[SignalEvent]) -> None:
+    st.subheader(f"{symbol} 異常訊號")
+    if not signal_events:
+        st.info("目前尚未偵測到明顯的五檔或成交異常。")
+        return
+
+    rows = [
+        {
+            "時間": event.created_at.strftime("%H:%M:%S"),
+            "方向": event.side,
+            "類型": event.event_type,
+            "強度": classify_severity(event.score),
+            "內容": event.message,
+        }
+        for event in signal_events[:8]
+    ]
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+
 def render_book_summary(summary: dict[str, Any] | None) -> None:
     st.subheader("五檔結構摘要")
     if not summary:
@@ -854,26 +999,6 @@ def render_book_summary(summary: dict[str, Any] | None) -> None:
     cols[1].metric("賣盤總量", f"{int(summary['ask_total']):,}")
     cols[2].metric("買前三檔占比", f"{summary['bid_near3_ratio']:.0%}")
     cols[3].metric("賣前三檔占比", f"{summary['ask_near3_ratio']:.0%}")
-
-
-def render_signal_panel(symbol: str, signal_events: list[SignalEvent]) -> None:
-    st.subheader(f"{symbol} 異常訊號")
-    if not signal_events:
-        st.info("目前尚未偵測到明顯的五檔或成交異常。")
-        return
-
-    rows = []
-    for event in signal_events[:8]:
-        rows.append(
-            {
-                "時間": event.created_at.strftime("%H:%M:%S"),
-                "方向": event.side,
-                "類型": event.event_type,
-                "強度": classify_severity(event.score),
-                "內容": event.message,
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
@@ -912,7 +1037,7 @@ def render_decision_panel(symbol: str, symbol_data: dict[str, Any], index_events
         st.info("目前資料不足，尚未形成明確的多空觀察結論。")
         return
 
-    st.dataframe(pd.DataFrame([{"說明": r} for r in reasons]), width="stretch", hide_index=True)
+    st.dataframe(pd.DataFrame([{"說明": reason} for reason in reasons]), width="stretch", hide_index=True)
 
 
 def render_tick_record_panel(symbol: str, trade_history: list[dict[str, Any]]) -> None:
@@ -933,108 +1058,96 @@ def render_tick_record_panel(symbol: str, trade_history: list[dict[str, Any]]) -
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
-def get_raw_api_key() -> tuple[str | None, str]:
-    if "FUGLE_API_KEY" in st.secrets:
-        return st.secrets["FUGLE_API_KEY"], "Streamlit secrets"
-    env_value = os.getenv("FUGLE_API_KEY")
-    if env_value:
-        return env_value, "環境變數"
-    return None, "未載入"
-
-
-def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
-    st.markdown("---")
-    st.subheader("全球指數參考")
-    st.caption("此區為參考數據，可能為延遲報價，非交易所即時成交。")
-
-    for item in benchmark_result.get("items", []):
-        label = item.get("label", "-")
-        price = item.get("price")
-        change = item.get("change")
-        change_pct = item.get("change_pct")
-        symbol = item.get("symbol", "-")
-        note = item.get("note", "參考")
-        timestamp = item.get("time", "-")
-        stale = item.get("stale", True)
-        age_seconds = item.get("age_seconds")
-
-        if price is None:
-            price_text = "-"
-            delta = "資料暫缺"
-        else:
-            sign = "+" if change is not None and change > 0 else ""
-            delta = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)" if change is not None and change_pct is not None else "-"
-            price_text = f"{price:,.2f}"
-
-        st.metric(label, price_text, delta=delta)
-        st.caption(f"最後更新 {timestamp} | {symbol}")
-        if stale:
-            age_text = f"{int(age_seconds)} 秒" if age_seconds is not None else "未知"
-            st.caption(f"來源未更新：{age_text}")
-        st.caption(note)
-
-    if benchmark_result.get("message"):
-        st.caption(benchmark_result["message"])
-
-
-def update_index_shock_signals(benchmark_result: dict[str, Any]) -> list[SignalEvent]:
-    if "index_signal_history" not in st.session_state:
-        st.session_state.index_signal_history = deque(maxlen=120)
-    if "index_signal_events" not in st.session_state:
-        st.session_state.index_signal_events = deque(maxlen=20)
-    if "index_signal_cooldowns" not in st.session_state:
-        st.session_state.index_signal_cooldowns = {}
-
-    twii_item = next((item for item in benchmark_result.get("items", []) if item.get("symbol") == "^TWII"), None)
-    if not twii_item or twii_item.get("price") is None or twii_item.get("stale"):
-        return list(st.session_state.index_signal_events)
-
-    now_ts = now_taipei().timestamp()
-    st.session_state.index_signal_history.append({"time": now_ts, "price": float(twii_item["price"])})
-    history = list(st.session_state.index_signal_history)
-    if len(history) < 2:
-        return list(st.session_state.index_signal_events)
-
-    recent_15s = [item for item in history if now_ts - item["time"] <= 15]
-    if len(recent_15s) >= 2:
-        base_price = recent_15s[0]["price"]
-        latest_price = recent_15s[-1]["price"]
-        change_pct = 0.0 if base_price == 0 else (latest_price - base_price) / base_price * 100
-        cooldown_key = "twii_shock"
-        last_emitted = st.session_state.index_signal_cooldowns.get(cooldown_key, 0.0)
-        if abs(change_pct) >= 0.35 and now_ts - last_emitted >= 20:
-            direction = "偏多" if change_pct > 0 else "偏空"
-            message = f"台灣加權指數 15 秒變動 {change_pct:+.2f}%，大盤出現明顯 {direction} 異動。"
-            score = min(0.95, 0.6 + abs(change_pct))
-            st.session_state.index_signal_events.appendleft(
-                SignalEvent(
-                    event_type="twii_shock",
-                    side="大盤",
-                    message=message,
-                    score=score,
-                    extra={"change_pct": change_pct},
-                )
-            )
-            st.session_state.index_signal_cooldowns[cooldown_key] = now_ts
-
-    return list(st.session_state.index_signal_events)
-
-
-def render_index_signal_panel(index_events: list[SignalEvent]) -> None:
-    st.subheader("大盤異動提示")
-    if not index_events:
-        st.info("目前尚未偵測到台灣加權指數的明顯急變。")
-        return
-
-    rows = [
-        {
-            "時間": event.created_at.strftime("%H:%M:%S"),
-            "強度": classify_severity(event.score),
-            "內容": event.message,
+def resolve_market_source(mode: str, api_key: str | None, symbols: list[str]) -> dict[str, Any]:
+    if mode == "示範資料":
+        return {
+            "source_name": "示範資料",
+            "using_demo": True,
+            "snapshots": build_mock_snapshot(symbols),
+            "status": {
+                "connected": False,
+                "authenticated": False,
+                "error_message": None,
+                "last_event_at": now_taipei(),
+                "last_status_message": "示範模式",
+                "subscriptions": 0,
+                "pending_subscriptions": 0,
+            },
+            "rest_result": {"ok": False, "message": "示範模式下不執行 REST 測試。", "data": None},
+            "diagnostic_note": "目前強制使用示範資料，不會連線 Fugle。",
+            "store": None,
         }
-        for event in index_events[:5]
-    ]
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+    if not api_key:
+        return {
+            "source_name": "示範資料",
+            "using_demo": True,
+            "snapshots": build_mock_snapshot(symbols),
+            "status": {
+                "connected": False,
+                "authenticated": False,
+                "error_message": "未提供 Fugle API key。",
+                "last_event_at": now_taipei(),
+                "last_status_message": "自動切換至示範模式",
+                "subscriptions": 0,
+                "pending_subscriptions": 0,
+            },
+            "rest_result": {"ok": False, "message": "未提供 API key，已改用示範資料。", "data": None},
+            "diagnostic_note": "尚未設定 Fugle API key，因此以示範資料運作。",
+            "store": None,
+        }
+
+    if RestClient is None or WebSocketClient is None:
+        return {
+            "source_name": "示範資料",
+            "using_demo": True,
+            "snapshots": build_mock_snapshot(symbols),
+            "status": {
+                "connected": False,
+                "authenticated": False,
+                "error_message": "fugle-marketdata 套件未安裝。",
+                "last_event_at": now_taipei(),
+                "last_status_message": "自動切換至示範模式",
+                "subscriptions": 0,
+                "pending_subscriptions": 0,
+            },
+            "rest_result": {"ok": False, "message": "fugle-marketdata 套件未安裝。", "data": None},
+            "diagnostic_note": "缺少 Fugle SDK，因此以示範資料運作。",
+            "store": None,
+        }
+
+    rest_result = test_rest_quote(api_key, symbols[0])
+    if not rest_result.get("ok"):
+        fallback_label = "Fugle（驗證失敗，改用示範資料）" if mode == "自動" else "Fugle（驗證失敗）"
+        return {
+            "source_name": fallback_label,
+            "using_demo": True,
+            "snapshots": build_mock_snapshot(symbols),
+            "status": {
+                "connected": False,
+                "authenticated": False,
+                "error_message": rest_result.get("message"),
+                "last_event_at": now_taipei(),
+                "last_status_message": "REST 驗證失敗，未啟用即時串流",
+                "subscriptions": 0,
+                "pending_subscriptions": 0,
+            },
+            "rest_result": rest_result,
+            "diagnostic_note": "Fugle REST 已失敗，因此不再嘗試把整體功能綁死在 WebSocket 上，先退回示範資料保留版面與訊號面板。",
+            "store": None,
+        }
+
+    store = get_store(api_key)
+    store.subscribe_symbols(symbols)
+    return {
+        "source_name": "Fugle",
+        "using_demo": False,
+        "snapshots": store.snapshot(symbols),
+        "status": store.status(),
+        "rest_result": rest_result,
+        "diagnostic_note": "Fugle REST 驗證成功，已啟用即時串流模式。",
+        "store": store,
+    }
 
 
 st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
@@ -1047,45 +1160,33 @@ with st.sidebar:
     symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
     symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
     refresh_seconds = st.slider("刷新秒數", min_value=1, max_value=10, value=1)
+    source_mode = st.selectbox("資料源模式", ["自動", "Fugle", "示範資料"], index=0)
     st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。")
 
 raw_api_key, api_key_source = get_raw_api_key()
 api_key, api_key_note = normalize_fugle_api_key(raw_api_key)
-using_mock = not api_key or WebSocketClient is None
 benchmark_result = fetch_benchmark_data()
 index_signal_events = update_index_shock_signals(benchmark_result)
+market_state = resolve_market_source(source_mode, api_key, symbols)
 
 with st.sidebar:
     render_sidebar_benchmark_section(benchmark_result)
 
-if using_mock:
-    st.warning("目前為示範模式。請在 Streamlit secrets 設定 FUGLE_API_KEY 後切換為即時行情。")
-    snapshots = build_mock_snapshot(symbols)
-    demo_signals = build_demo_signals(symbols, snapshots)
-    status = {
-        "connected": False,
-        "authenticated": False,
-        "error_message": None if WebSocketClient is not None else "尚未安裝 fugle-marketdata 套件。",
-        "last_event_at": now_taipei(),
-        "last_status_message": "示範模式",
-        "subscriptions": 0,
-        "pending_subscriptions": 0,
-    }
-    rest_result = {"ok": False, "message": "示範模式下不執行 REST 測試。", "data": None}
-else:
-    store = get_store(api_key)
-    store.subscribe_symbols(symbols)
-    snapshots = store.snapshot(symbols)
-    demo_signals = {}
-    status = store.status()
-    rest_result = test_rest_quote(api_key, symbols[0])
+status = market_state["status"]
+rest_result = market_state["rest_result"]
+snapshots = market_state["snapshots"]
+using_demo = market_state["using_demo"]
+store = market_state["store"]
+
+if using_demo:
+    st.warning("目前使用示範資料模式。當 Fugle 驗證通過後，會自動回到即時行情。")
 
 status_cols = st.columns(6)
-status_cols[0].metric("模式", "即時" if not using_mock else "示範")
-status_cols[1].metric("連線", "已連線" if status.get("connected") else "未連線")
-status_cols[2].metric("驗證", "成功" if status.get("authenticated") else "未完成")
-status_cols[3].metric("已訂閱", status.get("subscriptions", 0))
-status_cols[4].metric("待訂閱", status.get("pending_subscriptions", 0))
+status_cols[0].metric("模式", "示範" if using_demo else "即時")
+status_cols[1].metric("資料源", market_state["source_name"])
+status_cols[2].metric("連線", "已連線" if status.get("connected") else "未連線")
+status_cols[3].metric("驗證", "成功" if status.get("authenticated") else "未完成")
+status_cols[4].metric("已訂閱", status.get("subscriptions", 0))
 status_cols[5].metric("最後事件", status["last_event_at"].strftime("%H:%M:%S") if status.get("last_event_at") else "-")
 
 if status.get("error_message"):
@@ -1097,11 +1198,14 @@ with st.expander("連線診斷"):
     st.write(f"API key 來源：{api_key_source}")
     st.write(f"API key 狀態：{mask_secret(raw_api_key)}")
     st.write(f"API key 處理：{api_key_note}")
-    st.write(f"目前模式：{'即時' if not using_mock else '示範'}")
+    st.write(f"資料源模式：{source_mode}")
+    st.write(f"實際資料源：{market_state['source_name']}")
+    st.write(f"目前模式：{'示範' if using_demo else '即時'}")
     st.write(f"連線狀態：{'已連線' if status.get('connected') else '未連線'}")
     st.write(f"驗證狀態：{'成功' if status.get('authenticated') else '未完成'}")
     st.write(f"狀態訊息：{status.get('last_status_message') or '-'}")
     st.write(f"錯誤訊息：{status.get('error_message') or '-'}")
+    st.write(f"系統判斷：{market_state['diagnostic_note']}")
 
 with st.expander("REST 測試"):
     st.write(f"測試標的：{symbols[0] if symbols else DEFAULT_SYMBOLS[0]}")
@@ -1113,16 +1217,10 @@ with st.expander("REST 測試"):
 tabs = st.tabs(symbols)
 for tab, symbol in zip(tabs, symbols):
     with tab:
-        if not using_mock:
-            current_snapshots = store.snapshot([symbol])
-            symbol_data = current_snapshots.get(symbol, {})
-            signal_events = symbol_data.get("signal_events", [])
+        if not using_demo and store is not None:
+            symbol_data = store.snapshot([symbol]).get(symbol, {})
         else:
             symbol_data = snapshots.get(symbol, {})
-            symbol_data["trade_history"] = list(symbol_data.get("trades", []))
-            signal_events = demo_signals.get(symbol, [])
-
-        summary = symbol_data.get("book_summary")
 
         top_left, top_right = st.columns([1, 1])
         with top_left:
@@ -1134,9 +1232,9 @@ for tab, symbol in zip(tabs, symbols):
 
         mid_left, mid_right = st.columns([1.3, 1])
         with mid_left:
-            render_signal_panel(symbol, signal_events)
+            render_signal_panel(symbol, symbol_data.get("signal_events", []))
         with mid_right:
-            render_book_summary(summary)
+            render_book_summary(symbol_data.get("book_summary"))
 
         bottom_left, bottom_right = st.columns([1, 1])
         with bottom_left:
@@ -1153,10 +1251,9 @@ if refresh_seconds > 0:
 with st.expander("部署說明"):
     st.markdown(
         """
-        - 本系統使用官方 `fugle-marketdata` Python SDK 串接台股即時行情。
-        - 原始碼可放在 GitHub，並由 Streamlit Community Cloud 直接部署。
-        - 全球指數區為參考用途，可能為延遲報價，不建議直接作為交易依據。
-        - 若左側全球指數長時間未更新，頁面會顯示「來源未更新」，表示 Yahoo/yfinance 來源暫時沒有新值，不代表你的台股主監控程式故障。
+        - 本系統保留台股五檔、即時成交、開盤追蹤、異常訊號與全球指數參考面板。
+        - 當 Fugle 驗證失敗時，系統會自動退回示範資料，避免整個頁面失效。
+        - 全球指數區使用 Yahoo Finance 參考資料，可能為延遲報價，不建議直接作為交易依據。
         - 異常訊號屬規則式監控，適合盤中輔助判讀，不代表保證性的買賣建議。
         """
     )
