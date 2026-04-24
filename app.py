@@ -1659,6 +1659,27 @@ status_cols[5].metric("最後事件", status["last_event_at"].strftime("%H:%M:%S
 if status.get("error_message"):
     st.error(status["error_message"])
 
+with st.expander("連線診斷"):
+    st.write(f"API key 來源：{api_key_source}")
+    st.write(f"API key 狀態：{mask_secret(raw_api_key)}")
+    st.write(f"API key 處理：{api_key_note}")
+    st.write(f"資料源模式：{source_mode}")
+    st.write(f"實際資料源：{market_state['source_name']}")
+    st.write(f"目前模式：{'示範' if using_demo else '即時'}")
+    st.write(f"連線狀態：{'已連線' if status.get('connected') else '未連線'}")
+    st.write(f"驗證狀態：{'成功' if status.get('authenticated') else '未完成'}")
+    st.write(f"狀態訊息：{status.get('last_status_message') or '-'}")
+    st.write(f"錯誤訊息：{status.get('error_message') or '-'}")
+    st.write(f"系統判斷：{market_state['diagnostic_note']}")
+    st.write(f"資料落地目錄：{DATA_LOG_DIR}")
+
+with st.expander("REST 測試"):
+    st.write(f"測試標的：{symbols[0] if symbols else DEFAULT_SYMBOLS[0]}")
+    st.write(f"測試結果：{'成功' if rest_result.get('ok') else '失敗'}")
+    st.write(f"訊息：{rest_result.get('message')}")
+    if rest_result.get("ok") and rest_result.get("data"):
+        st.json(rest_result["data"])
+
 tabs = st.tabs(symbols)
 for tab, symbol in zip(tabs, symbols):
     with tab:
