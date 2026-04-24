@@ -997,13 +997,40 @@ def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
         st.caption(benchmark_result["message"])
 
 
-def render_index_signal_panel(index_events: list[SignalEvent]) -> None:
-    st.subheader("大盤異動提示")
+def render_index_signal_panel(benchmark_result: dict[str, Any], index_events: list[SignalEvent]) -> None:
+    st.markdown('<div class="panel-title">大盤異動提示</div>', unsafe_allow_html=True)
+    twii_item = next((item for item in benchmark_result.get("items", []) if item.get("symbol") == "^TWII"), None)
+
+    cols = st.columns(4)
+    if twii_item and twii_item.get("price") is not None:
+        price_text = f"{twii_item['price']:,.2f}"
+        change = float(twii_item.get("change") or 0)
+        change_pct = float(twii_item.get("change_pct") or 0)
+        sign = "+" if change > 0 else ""
+        delta_text = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)"
+        cols[0].metric("台灣加權指數", price_text, delta=delta_text)
+        cols[1].metric("最後更新", twii_item.get("time", "-"))
+        cols[2].metric("資料狀態", "來源未更新" if twii_item.get("stale") else "更新中")
+        cols[3].metric("事件數", len(index_events))
+    else:
+        cols[0].metric("台灣加權指數", "-")
+        cols[1].metric("最後更新", "-")
+        cols[2].metric("資料狀態", "無資料")
+        cols[3].metric("事件數", len(index_events))
+
     if not index_events:
-        st.info("目前尚未偵測到台灣加權指數的明顯急變。")
+        render_empty_box("目前尚未偵測到台灣加權指數的明顯急變。", medium=True)
         return
-    rows = [{"時間": event.created_at.strftime("%H:%M:%S"), "強度": classify_severity(event.score), "內容": event.message} for event in index_events[:5]]
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=220)
+
+    rows = [
+        {
+            "時間": event.created_at.strftime("%H:%M:%S"),
+            "強度": classify_severity(event.score),
+            "內容": event.message,
+        }
+        for event in index_events[:5]
+    ]
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=180)
 
 
 def render_empty_box(message: str, tall: bool = False, medium: bool = False) -> None:
@@ -1341,7 +1368,6 @@ status_cols[5].metric("最後事件", status["last_event_at"].strftime("%H:%M:%S
 if status.get("error_message"):
     st.error(status["error_message"])
 
-render_index_signal_panel(index_signal_events)
 render_log_panel(symbols)
 
 with st.expander("連線診斷"):
@@ -1376,28 +1402,35 @@ for tab, symbol in zip(tabs, symbols):
             symbol_data = merge_symbol_snapshot(rest_snapshot, stream_snapshot)
 
         with st.container(border=True):
+            render_index_signal_panel(benchmark_result, index_signal_events)
+
+        with st.container(border=True):
             render_signal_panel(symbol, symbol_data.get("signal_events", []))
 
-        left_col, right_col = st.columns([1, 1])
+        row_one_left, row_one_right = st.columns([1, 1])
 
-        with left_col:
+        with row_one_left:
             with st.container(border=True):
                 render_order_book(symbol, symbol_data.get("book"))
-            with st.container(border=True):
-                render_trade_summary(symbol, symbol_data.get("last_trade"), symbol_data.get("quote_data"))
-            with st.container(border=True):
-                render_book_summary(symbol_data.get("book_summary"))
-            with st.container(border=True):
-                render_opening_panel(symbol, symbol_data)
-            with st.container(border=True):
-                render_decision_panel(symbol, symbol_data, index_signal_events)
-
-        with right_col:
+        with row_one_right:
             with st.container(border=True):
                 render_trade_tape(symbol_data.get("trades", []))
 
-        with st.container(border=True):
-            render_tick_record_panel(symbol, symbol_data.get("trade_history", []))
+        row_two_left, row_two_right = st.columns([1, 1])
+        with row_two_left:
+            with st.container(border=True):
+                render_trade_summary(symbol, symbol_data.get("last_trade"), symbol_data.get("quote_data"))
+        with row_two_right:
+            with st.container(border=True):
+                render_opening_panel(symbol, symbol_data)
+
+        row_three_left, row_three_right = st.columns([1, 1])
+        with row_three_left:
+            with st.container(border=True):
+                render_book_summary(symbol_data.get("book_summary"))
+        with row_three_right:
+            with st.container(border=True):
+                render_decision_panel(symbol, symbol_data, index_signal_events)
 
 if refresh_seconds > 0:
     time.sleep(refresh_seconds)
