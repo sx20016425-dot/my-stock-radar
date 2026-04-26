@@ -41,6 +41,7 @@ TOP_LEVEL_MONITOR_COUNT = 3
 LEVEL_ABS_DELTA_THRESHOLD = 300
 LEVEL_RATIO_UP_THRESHOLD = 1.8
 LEVEL_RATIO_DOWN_THRESHOLD = 0.45
+MAX_STREAM_SYMBOLS = 2
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_LOG_DIR = APP_DIR / "data_logs"
@@ -197,6 +198,17 @@ def benchmark_age_seconds(value: Any) -> float | None:
 def normalize_symbols(raw: str) -> list[str]:
     parts = [item.strip() for item in raw.replace(";", ",").replace("，", ",").split(",")]
     return [item for item in parts if item]
+
+
+def enforce_stream_symbol_limit(symbols: list[str], max_symbols: int = MAX_STREAM_SYMBOLS) -> tuple[list[str], bool]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        if symbol not in seen:
+            cleaned.append(symbol)
+            seen.add(symbol)
+    trimmed = cleaned[:max_symbols]
+    return trimmed, len(cleaned) > len(trimmed)
 
 
 def mask_secret(value: str | None) -> str:
@@ -1198,7 +1210,6 @@ def render_sidebar_benchmark_section(benchmark_result: dict[str, Any]) -> None:
         price = item.get("price")
         change = item.get("change")
         change_pct = item.get("change_pct")
-
         if price is None:
             price_text = "-"
             delta = "資料暫缺"
@@ -1642,10 +1653,14 @@ st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、
 with st.sidebar:
     st.header("監控設定")
     symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
-    symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
+    input_symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
+    symbols, symbols_trimmed = enforce_stream_symbol_limit(input_symbols)
     refresh_seconds = st.slider("刷新秒數", min_value=0.2, max_value=10.0, value=0.5, step=0.1)
     source_mode = st.selectbox("資料源模式", ["自動", "Fugle", "示範資料"], index=0)
     st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。刷新過快可能讓 Streamlit Cloud 比較吃資源。")
+    st.caption(f"目前預設最多監控 {MAX_STREAM_SYMBOLS} 檔，約佔用 {MAX_STREAM_SYMBOLS * 2} 個訂閱數。")
+    if symbols_trimmed:
+        st.warning(f"輸入股票超過上限，已自動只保留前 {MAX_STREAM_SYMBOLS} 檔：{', '.join(symbols)}")
 
 raw_api_key, api_key_source = get_raw_api_key()
 api_key, api_key_note = normalize_fugle_api_key(raw_api_key)
