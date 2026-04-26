@@ -63,6 +63,14 @@ BENCHMARK_SYMBOLS = [
     {"label": "標普期貨參考", "symbol": "ES=F", "note": "期貨參考"},
 ]
 
+SYMBOL_NAME_HINTS = {
+    "2330": "台積電",
+    "2317": "鴻海",
+    "2454": "聯發科",
+    "0050": "元大台灣50",
+    "0056": "元大高股息",
+}
+
 LOGIN_HELP_TEXT = "請輸入你核發的登入序號。只有通過審核的序號才能進入監控頁。"
 
 
@@ -1607,6 +1615,15 @@ def merge_symbol_snapshot(rest_snapshot: dict[str, Any] | None, stream_snapshot:
     }
 
 
+def build_symbol_tab_labels(symbols: list[str], rest_snapshots: dict[str, dict[str, Any]], fallback_snapshots: dict[str, dict[str, Any]]) -> list[str]:
+    labels: list[str] = []
+    for symbol in symbols:
+        quote_data = (rest_snapshots.get(symbol) or {}).get("quote_data") or (fallback_snapshots.get(symbol) or {}).get("quote_data") or {}
+        name = quote_data.get("name") or SYMBOL_NAME_HINTS.get(symbol, "")
+        labels.append(f"{symbol} {name}" if name else symbol)
+    return labels
+
+
 st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
 inject_custom_css()
 ensure_log_dirs()
@@ -1680,7 +1697,8 @@ with st.expander("REST 測試"):
     if rest_result.get("ok") and rest_result.get("data"):
         st.json(rest_result["data"])
 
-tabs = st.tabs(symbols)
+tab_labels = build_symbol_tab_labels(symbols, rest_snapshots, fallback_snapshots)
+tabs = st.tabs(tab_labels)
 for tab, symbol in zip(tabs, symbols):
     with tab:
         if using_demo:
