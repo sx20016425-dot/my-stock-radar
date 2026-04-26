@@ -1,199 +1,143 @@
-﻿import base64
-import binascii
-import csv
-import json
-import os
-import re
-import threading
-import time
-from collections.abc import Mapping
-from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
-from typing import Any
-import zoneinfo
-
-import pandas as pd
-import streamlit as st
-
-try:
-    from fugle_marketdata import RestClient, WebSocketClient
-except ImportError:
-    RestClient = None
-    WebSocketClient = None
-
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
+def merge_symbol_snapshot(rest_snapshot: dict[str, Any] | None, stream_snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    rest_snapshot = rest_snapshot or {}
+    stream_snapshot = stream_snapshot or {}
+    return {
+        "book": stream_snapshot.get("book") or rest_snapshot.get("book"),
+        "last_trade": stream_snapshot.get("last_trade") or rest_snapshot.get("last_trade"),
+        "trades": stream_snapshot.get("trades") or rest_snapshot.get("trades", []),
+        "signal_events": stream_snapshot.get("signal_events") or rest_snapshot.get("signal_events", []),
+        "book_summary": stream_snapshot.get("book_summary") or rest_snapshot.get("book_summary"),
+        "open_trade": stream_snapshot.get("open_trade") or rest_snapshot.get("open_trade"),
+        "session_high": stream_snapshot.get("session_high") or rest_snapshot.get("session_high"),
+        "session_low": stream_snapshot.get("session_low") or rest_snapshot.get("session_low"),
+        "trade_history": stream_snapshot.get("trade_history") or rest_snapshot.get("trade_history", []),
+        "quote_data": stream_snapshot.get("quote_data") or rest_snapshot.get("quote_data"),
+    }
 
 
-TAIPEI_TZ = zoneinfo.ZoneInfo("Asia/Taipei")
-DEFAULT_SYMBOLS = ["2330", "2317"]
-MAX_RECENT_TRADES = 50
-MAX_BOOK_HISTORY = 300
-MAX_TRADE_HISTORY = 2000
-MAX_SIGNAL_EVENTS = 100
-BENCHMARK_STALE_SECONDS = 300
-UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
-TOP_LEVEL_MONITOR_COUNT = 3
-LEVEL_ABS_DELTA_THRESHOLD = 300
-LEVEL_RATIO_UP_THRESHOLD = 1.8
-LEVEL_RATIO_DOWN_THRESHOLD = 0.45
-
-APP_DIR = Path(__file__).resolve().parent
-DATA_LOG_DIR = APP_DIR / "data_logs"
-TICK_LOG_DIR = DATA_LOG_DIR / "ticks"
-BOOK_LOG_DIR = DATA_LOG_DIR / "books"
-SIGNAL_LOG_DIR = DATA_LOG_DIR / "signals"
-
-ORDER_BOOK_HEIGHT = 250
-TRADE_TAPE_HEIGHT = 280
-SIGNAL_PANEL_HEIGHT = 280
-OPEN_PANEL_HEIGHT = 180
-SUMMARY_PANEL_HEIGHT = 180
-
-BENCHMARK_SYMBOLS = [
-    {"label": "台灣加權指數", "symbol": "^TWII", "note": "現貨指數參考"},
-    {"label": "日經225", "symbol": "^N225", "note": "現貨指數參考"},
-    {"label": "恆生指數", "symbol": "^HSI", "note": "現貨指數參考"},
-    {"label": "韓國KOSPI", "symbol": "^KS11", "note": "現貨指數參考"},
-    {"label": "那指期貨參考", "symbol": "NQ=F", "note": "期貨參考"},
-    {"label": "標普期貨參考", "symbol": "ES=F", "note": "期貨參考"},
-]
-
-SYMBOL_NAME_HINTS = {
-    "2330": "台積電",
-    "2317": "鴻海",
-    "2454": "聯發科",
-    "0050": "元大台灣50",
-    "0056": "元大高股息",
-}
-
-LOGIN_HELP_TEXT = "請輸入你核發的登入序號。只有通過審核的序號才能進入監控頁。"
+def build_symbol_tab_labels(symbols: list[str], rest_snapshots: dict[str, dict[str, Any]], fallback_snapshots: dict[str, dict[str, Any]]) -> list[str]:
+    labels: list[str] = []
+    for symbol in symbols:
+        quote_data = (rest_snapshots.get(symbol) or {}).get("quote_data") or (fallback_snapshots.get(symbol) or {}).get("quote_data") or {}
+        name = quote_data.get("name") or SYMBOL_NAME_HINTS.get(symbol, "")
+        labels.append(f"{symbol} {name}" if name else symbol)
+    return labels
 
 
-def inject_custom_css() -> None:
-    st.markdown(
-        """
-        <style>
-        [data-baseweb="tab-list"] button {
-            font-size: 18px !important;
-            font-weight: 700 !important;
-            min-height: 48px !important;
-            padding: 10px 18px !important;
-        }
-        [data-testid="stMetricValue"] {
-            font-size: 1.8rem !important;
-        }
-        .panel-title {
-            font-size: 1.2rem;
-            font-weight: 700;
-            margin-bottom: 0.6rem;
-        }
-        .panel-shell {
-            border: 1px solid rgba(128,128,128,0.25);
-            border-radius: 14px;
-            padding: 0.85rem 0.95rem 0.55rem 0.95rem;
-            background: rgba(255,255,255,0.02);
-            min-height: 100%;
-        }
-        .placeholder-box {
-            height: 170px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            border: 1px dashed rgba(128,128,128,0.35);
-            border-radius: 12px;
-            color: rgba(250,250,250,0.7);
-            background: rgba(255,255,255,0.02);
-            padding: 0.8rem;
-        }
-        .placeholder-box.tall {
-            height: 215px;
-        }
-        .placeholder-box.medium {
-            height: 150px;
-        }
-        .login-shell {
-            max-width: 520px;
-            margin: 4rem auto 0 auto;
-            border: 1px solid rgba(128,128,128,0.25);
-            border-radius: 18px;
-            padding: 1.2rem 1.2rem 1rem 1.2rem;
-            background: rgba(255,255,255,0.03);
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+st.set_page_config(page_title="台股即時監控台", page_icon=":bar_chart:", layout="wide")
+inject_custom_css()
+ensure_log_dirs()
 
+if "access_granted" not in st.session_state:
+    st.session_state["access_granted"] = False
+if "access_key_masked" not in st.session_state:
+    st.session_state["access_key_masked"] = ""
+if "access_role" not in st.session_state:
+    st.session_state["access_role"] = ""
 
-def now_taipei() -> datetime:
-    return datetime.now(TAIPEI_TZ)
+st.title("台股即時監控台")
+st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、開盤追蹤、異常訊號與盤中資料落地監控頁面。")
 
+with st.sidebar:
+    st.header("監控設定")
+    symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
+    symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
+    refresh_seconds = st.slider("刷新秒數", min_value=0.2, max_value=10.0, value=0.5, step=0.1)
+    source_mode = st.selectbox("資料源模式", ["自動", "Fugle", "示範資料"], index=0)
+    st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。刷新過快可能讓 Streamlit Cloud 比較吃資源。")
 
-def today_taipei_str() -> str:
-    return now_taipei().strftime("%Y%m%d")
+raw_api_key, api_key_source = get_raw_api_key()
+api_key, api_key_note = normalize_fugle_api_key(raw_api_key)
+benchmark_result = fetch_benchmark_data()
+index_signal_events = update_index_shock_signals(benchmark_result)
+market_state = resolve_market_source(source_mode, api_key, symbols)
 
+with st.sidebar:
+    render_sidebar_benchmark_section(benchmark_result)
 
-def ensure_log_dirs() -> None:
-    for path in (DATA_LOG_DIR, TICK_LOG_DIR, BOOK_LOG_DIR, SIGNAL_LOG_DIR):
-        path.mkdir(parents=True, exist_ok=True)
+status = market_state["status"]
+rest_result = market_state["rest_result"]
+rest_snapshots = market_state["rest_snapshots"]
+fallback_snapshots = market_state["snapshots"]
+using_demo = market_state["using_demo"]
+store = market_state["store"]
 
+if using_demo:
+    st.warning("目前使用示範資料模式。當 Fugle 驗證通過後，會自動回到即時行情。")
 
-def append_csv_row(path: Path, fieldnames: list[str], row: dict[str, Any]) -> None:
-    ensure_log_dirs()
-    file_exists = path.exists()
-    with path.open("a", newline="", encoding="utf-8-sig") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({key: row.get(key, "") for key in fieldnames})
+status_cols = st.columns(6)
+status_cols[0].metric("模式", "示範" if using_demo else "即時")
+status_cols[1].metric("資料源", market_state["source_name"])
+status_cols[2].metric("連線", "已連線" if status.get("connected") else "未連線")
+status_cols[3].metric("驗證", "成功" if status.get("authenticated") else "未完成")
+status_cols[4].metric("已訂閱", status.get("subscriptions", 0))
+status_cols[5].metric("最後事件", status["last_event_at"].strftime("%H:%M:%S") if status.get("last_event_at") else "-")
 
+if status.get("error_message"):
+    st.error(status["error_message"])
 
-def format_fugle_time(value: Any) -> str:
-    if value in (None, ""):
-        return "-"
-    try:
-        timestamp = float(value)
-        if timestamp > 10_000_000_000_000:
-            timestamp /= 1_000_000
-        elif timestamp > 10_000_000_000:
-            timestamp /= 1_000
-        return datetime.fromtimestamp(timestamp, TAIPEI_TZ).strftime("%H:%M:%S")
-    except Exception:
-        return str(value)
+with st.expander("連線診斷"):
+    st.write(f"API key 來源：{api_key_source}")
+    st.write(f"API key 狀態：{mask_secret(raw_api_key)}")
+    st.write(f"API key 處理：{api_key_note}")
+    st.write(f"資料源模式：{source_mode}")
+    st.write(f"實際資料源：{market_state['source_name']}")
+    st.write(f"目前模式：{'示範' if using_demo else '即時'}")
+    st.write(f"連線狀態：{'已連線' if status.get('connected') else '未連線'}")
+    st.write(f"驗證狀態：{'成功' if status.get('authenticated') else '未完成'}")
+    st.write(f"狀態訊息：{status.get('last_status_message') or '-'}")
+    st.write(f"錯誤訊息：{status.get('error_message') or '-'}")
+    st.write(f"系統判斷：{market_state['diagnostic_note']}")
+    st.write(f"資料落地目錄：{DATA_LOG_DIR}")
 
+with st.expander("REST 測試"):
+    st.write(f"測試標的：{symbols[0] if symbols else DEFAULT_SYMBOLS[0]}")
+    st.write(f"測試結果：{'成功' if rest_result.get('ok') else '失敗'}")
+    st.write(f"訊息：{rest_result.get('message')}")
+    if rest_result.get("ok") and rest_result.get("data"):
+        st.json(rest_result["data"])
 
-def format_benchmark_time(value: Any) -> str:
-    if value in (None, ""):
-        return "-"
-    try:
-        ts = value if isinstance(value, pd.Timestamp) else pd.Timestamp(value)
-        if ts.tzinfo is None:
-            return ts.strftime("%H:%M:%S")
-        return ts.tz_convert(TAIPEI_TZ).strftime("%H:%M:%S")
-    except Exception:
-        return "-"
-
-
-def benchmark_age_seconds(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        ts = value if isinstance(value, pd.Timestamp) else pd.Timestamp(value)
-        if ts.tzinfo is None:
-            ts = ts.tz_localize(TAIPEI_TZ)
+tab_labels = build_symbol_tab_labels(symbols, rest_snapshots, fallback_snapshots)
+tabs = st.tabs(tab_labels)
+for tab, symbol in zip(tabs, symbols):
+    with tab:
+        if using_demo:
+            symbol_data = fallback_snapshots.get(symbol, {})
         else:
-            ts = ts.tz_convert(TAIPEI_TZ)
-        return max(0.0, (now_taipei() - ts.to_pydatetime()).total_seconds())
-    except Exception:
-        return None
+            stream_snapshot = store.snapshot([symbol]).get(symbol, {}) if store is not None else {}
+            rest_snapshot = rest_snapshots.get(symbol, {})
+            symbol_data = merge_symbol_snapshot(rest_snapshot, stream_snapshot)
 
+        with st.container(border=True):
+            render_index_signal_panel(benchmark_result, index_signal_events)
 
-def normalize_symbols(raw: str) -> list[str]:
-    parts = [item.strip() for item in raw.replace(";", ",").replace("，", ",").split(",")]
-    return [item for item in parts if item]
+        with st.container(border=True):
+            render_signal_panel(symbol, symbol_data.get("signal_events", []))
+
+        with st.container():
+            row_one_left, row_one_mid, row_one_right = st.columns([1.2, 1.2, 1.0])
+
+            with row_one_left:
+                with st.container(border=True):
+                    render_order_book(symbol, symbol_data.get("book"))
+            with row_one_mid:
+                with st.container(border=True):
+                    render_trade_tape(symbol_data.get("trades", []))
+            with row_one_right:
+                with st.container(border=True):
+                    render_decision_panel(symbol, symbol_data, index_signal_events)
+
+        row_two_left, row_two_right = st.columns([1, 1])
+        with row_two_left:
+            with st.container(border=True):
+                render_trade_summary(symbol, symbol_data.get("last_trade"), symbol_data.get("quote_data"))
+        with row_two_right:
+            with st.container(border=True):
+                render_opening_panel(symbol, symbol_data)
+
+        with st.container(border=True):
+            render_book_summary(symbol_data.get("book_summary"), symbol_data.get("trade_history", []))
+
+if refresh_seconds > 0:
+    time.sleep(refresh_seconds)
+    st.rerun()
