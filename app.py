@@ -35,6 +35,7 @@ MAX_RECENT_TRADES = 50
 MAX_BOOK_HISTORY = 300
 MAX_TRADE_HISTORY = 2000
 MAX_SIGNAL_EVENTS = 100
+MAX_DEFENSE_EVENTS = 300
 BENCHMARK_STALE_SECONDS = 300
 UUID_PAIR_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}\s+[0-9a-fA-F-]{36}$")
 TOP_LEVEL_MONITOR_COUNT = 3
@@ -42,6 +43,9 @@ LEVEL_ABS_DELTA_THRESHOLD = 300
 LEVEL_RATIO_UP_THRESHOLD = 1.8
 LEVEL_RATIO_DOWN_THRESHOLD = 0.45
 MAX_STREAM_SYMBOLS = 2
+DEFENSE_WINDOW_SECONDS = 45
+DEFENSE_MIN_RETESTS = 3
+DEFENSE_SECOND_LEVEL_SIZE = 300
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_LOG_DIR = APP_DIR / "data_logs"
@@ -70,6 +74,27 @@ SYMBOL_NAME_HINTS = {
     "2454": "聯發科",
     "0050": "元大台灣50",
     "0056": "元大高股息",
+}
+
+SIGNAL_TYPE_LABELS = {
+    "close_snapshot": "收盤快照",
+    "opening_trade": "開盤首筆",
+    "bid_stack_up": "買盤堆量",
+    "bid_pull": "買盤抽單",
+    "ask_stack_up": "賣盤堆量",
+    "ask_pull": "賣盤抽單",
+    "bid_front_loaded": "買盤近價集中",
+    "ask_front_loaded": "賣盤近價集中",
+    "ask_replenish_after_trade": "賣盤成交補單",
+    "bid_replenish_after_trade": "買盤成交補單",
+    "ask_defense_hold": "高不過高",
+    "bid_defense_hold": "低不過低",
+}
+
+SEVERITY_TRADER_LABELS = {
+    "高": "警戒",
+    "中": "注意",
+    "低": "觀察",
 }
 
 LOGIN_HELP_TEXT = "請輸入你核發的登入序號。只有通過審核的序號才能進入監控頁。"
@@ -518,6 +543,14 @@ def classify_severity(score: float) -> str:
     return "低"
 
 
+def get_signal_type_label(event_type: str) -> str:
+    return SIGNAL_TYPE_LABELS.get(event_type, event_type)
+
+
+def get_trader_severity_label(score: float) -> str:
+    return SEVERITY_TRADER_LABELS.get(classify_severity(score), "觀察")
+
+
 def score_to_bias(score: float) -> str:
     if score >= 1.4:
         return "偏多"
@@ -544,6 +577,7 @@ class SymbolState:
     book_history: deque = field(default_factory=lambda: deque(maxlen=MAX_BOOK_HISTORY))
     trade_history: deque = field(default_factory=lambda: deque(maxlen=MAX_TRADE_HISTORY))
     signal_events: deque = field(default_factory=lambda: deque(maxlen=MAX_SIGNAL_EVENTS))
+    defense_events: deque = field(default_factory=lambda: deque(maxlen=MAX_DEFENSE_EVENTS))
     signal_cooldowns: dict[str, float] = field(default_factory=dict)
     last_processed_trade_serial: Any = None
     open_trade: dict[str, Any] | None = None
@@ -699,6 +733,94 @@ class FugleRealtimeStore:
         state.signal_events.appendleft(event)
         self.persist_signal_event(symbol, event)
 
+    def _record_price_defense(
+        self,
+        symbol: str,
+        state: SymbolState,
+        defense_side: str,
+        trade_price: float,
+        trade_size: int,
+        defense_price: float,
+        second_price: float | None,
+        second_size: int,
+    ) -> None:
+        now_ts = now_taipei().timestamp()
+        state.defense_events.append(
+            {
+                "ts": now_ts,
+                "side": defense_side,
+                "trade_price": trade_price,
+                "trade_size": trade_size,
+                "defense_price": defense_price,
+                "second_price": second_price,
+                "second_size": second_size,
+            }
+        )
+
+        recent_events = deque(maxlen=MAX_DEFENSE_EVENTS)
+        for item in state.defense_events:
+            if now_ts - float(item.get("ts", 0)) <= DEFENSE_WINDOW_SECONDS:
+                recent_events.append(item)
+        state.defense_events = recent_events
+
+        matched = [
+            item
+            for item in state.defense_events
+            if item.get("side") == defense_side and abs(float(item.get("defense_price") or 0) - defense_price) < 1e-9
+        ]
+        if len(matched) < DEFENSE_MIN_RETESTS:
+            return
+
+        second_level_support_count = sum(1 for item in matched if int(item.get("second_size") or 0) >= DEFENSE_SECOND_LEVEL_SIZE)
+        total_trade_size = sum(int(item.get("trade_size") or 0) for item in matched)
+
+        if defense_side == "ask":
+            still_blocked = max(float(item.get("trade_price") or 0) for item in matched) <= defense_price
+            if still_blocked:
+                extra_guard = ""
+                if second_level_support_count >= 2 and second_price is not None:
+                    extra_guard = f"，且賣二 {second_price:.2f} 持續有大單防守"
+                score = min(0.95, 0.62 + 0.07 * max(0, len(matched) - DEFENSE_MIN_RETESTS) + (0.08 if second_level_support_count >= 2 else 0))
+                self._emit_signal(
+                    symbol,
+                    state,
+                    "ask_defense_hold",
+                    "賣盤",
+                    f"{symbol} {defense_price:.2f} 這口價一直被買，但 {DEFENSE_WINDOW_SECONDS} 秒內連打 {len(matched)} 次、累計 {total_trade_size:,} 股還是過不去{extra_guard}，空方守很兇，短線像高不過高。",
+                    score,
+                    {
+                        "defense_price": defense_price,
+                        "retests": len(matched),
+                        "total_trade_size": total_trade_size,
+                        "second_price": second_price,
+                        "second_size": second_size,
+                    },
+                    cooldown_seconds=20,
+                )
+        else:
+            still_blocked = min(float(item.get("trade_price") or 0) for item in matched) >= defense_price
+            if still_blocked:
+                extra_guard = ""
+                if second_level_support_count >= 2 and second_price is not None:
+                    extra_guard = f"，且買二 {second_price:.2f} 持續有大單防守"
+                score = min(0.95, 0.62 + 0.07 * max(0, len(matched) - DEFENSE_MIN_RETESTS) + (0.08 if second_level_support_count >= 2 else 0))
+                self._emit_signal(
+                    symbol,
+                    state,
+                    "bid_defense_hold",
+                    "買盤",
+                    f"{symbol} {defense_price:.2f} 這口價一直被打，但 {DEFENSE_WINDOW_SECONDS} 秒內連測 {len(matched)} 次、累計 {total_trade_size:,} 股還是跌不破{extra_guard}，多方撐很硬，短線像低不過低。",
+                    score,
+                    {
+                        "defense_price": defense_price,
+                        "retests": len(matched),
+                        "total_trade_size": total_trade_size,
+                        "second_price": second_price,
+                        "second_size": second_size,
+                    },
+                    cooldown_seconds=20,
+                )
+
     def _analyse_order_book_change(self, symbol: str, state: SymbolState, current_trade: dict[str, Any] | None = None) -> None:
         if len(state.book_history) < 2:
             return
@@ -714,26 +836,26 @@ class FugleRealtimeStore:
         if prev["bid_total"] > 0:
             if curr["bid_total"] >= prev["bid_total"] * 1.6 and bid_delta >= 500:
                 score = min(0.95, 0.55 + abs(bid_delta) / max(prev["bid_total"], 1))
-                self._emit_signal(symbol, state, "bid_stack_up", "買盤", f"{symbol} 買盤五檔總量異常增加 {int(bid_delta):,}，疑似堆量或承接。", score, {"bid_delta": bid_delta})
+                self._emit_signal(symbol, state, "bid_stack_up", "買盤", f"{symbol} 下方買盤一下補了 {int(bid_delta):,}，有人在硬接。", score, {"bid_delta": bid_delta})
             if curr["bid_total"] <= prev["bid_total"] * 0.55 and abs(bid_delta) >= 500:
                 score = min(0.95, 0.55 + abs(bid_delta) / max(prev["bid_total"], 1))
-                self._emit_signal(symbol, state, "bid_pull", "買盤", f"{symbol} 買盤五檔總量快速減少 {int(abs(bid_delta)):,}，疑似抽單。", score, {"bid_delta": bid_delta})
+                self._emit_signal(symbol, state, "bid_pull", "買盤", f"{symbol} 下方買盤抽掉 {int(abs(bid_delta)):,}，接手在退。", score, {"bid_delta": bid_delta})
 
         if prev["ask_total"] > 0:
             if curr["ask_total"] >= prev["ask_total"] * 1.6 and ask_delta >= 500:
                 score = min(0.95, 0.55 + abs(ask_delta) / max(prev["ask_total"], 1))
-                self._emit_signal(symbol, state, "ask_stack_up", "賣盤", f"{symbol} 賣盤五檔總量異常增加 {int(ask_delta):,}，疑似壓單掛出。", score, {"ask_delta": ask_delta})
+                self._emit_signal(symbol, state, "ask_stack_up", "賣盤", f"{symbol} 上方賣盤一下補了 {int(ask_delta):,}，壓單變重。", score, {"ask_delta": ask_delta})
             if curr["ask_total"] <= prev["ask_total"] * 0.55 and abs(ask_delta) >= 500:
                 score = min(0.95, 0.55 + abs(ask_delta) / max(prev["ask_total"], 1))
-                self._emit_signal(symbol, state, "ask_pull", "賣盤", f"{symbol} 賣盤五檔總量快速減少 {int(abs(ask_delta)):,}，疑似抽單。", score, {"ask_delta": ask_delta})
+                self._emit_signal(symbol, state, "ask_pull", "賣盤", f"{symbol} 上方賣盤抽掉 {int(abs(ask_delta)):,}，壓力在退。", score, {"ask_delta": ask_delta})
 
         bid_ratio_jump = curr["bid_near3_ratio"] - prev["bid_near3_ratio"]
         ask_ratio_jump = curr["ask_near3_ratio"] - prev["ask_near3_ratio"]
 
         if bid_ratio_jump >= 0.18 and curr["bid_near3_ratio"] >= 0.62:
-            self._emit_signal(symbol, state, "bid_front_loaded", "買盤", f"{symbol} 買盤前三檔占比提高到 {curr['bid_near3_ratio']:.0%}，近價承接明顯集中。", min(0.9, 0.45 + bid_ratio_jump * 2), {"bid_near3_ratio": curr["bid_near3_ratio"]})
+            self._emit_signal(symbol, state, "bid_front_loaded", "買盤", f"{symbol} 買盤火力往前推，前三檔占比拉到 {curr['bid_near3_ratio']:.0%}，近價有人顧。", min(0.9, 0.45 + bid_ratio_jump * 2), {"bid_near3_ratio": curr["bid_near3_ratio"]})
         if ask_ratio_jump >= 0.18 and curr["ask_near3_ratio"] >= 0.62:
-            self._emit_signal(symbol, state, "ask_front_loaded", "賣盤", f"{symbol} 賣盤前三檔占比提高到 {curr['ask_near3_ratio']:.0%}，近價賣壓集中。", min(0.9, 0.45 + ask_ratio_jump * 2), {"ask_near3_ratio": curr["ask_near3_ratio"]})
+            self._emit_signal(symbol, state, "ask_front_loaded", "賣盤", f"{symbol} 賣盤火力往前壓，前三檔占比拉到 {curr['ask_near3_ratio']:.0%}，近價壓力變重。", min(0.9, 0.45 + ask_ratio_jump * 2), {"ask_near3_ratio": curr["ask_near3_ratio"]})
 
         for idx in range(TOP_LEVEL_MONITOR_COUNT):
             prev_bid_size = int(prev["bid_map"].get(safe_float(current_bids[idx].get("price")) if idx < len(current_bids) else None, 0))
@@ -749,7 +871,7 @@ class FugleRealtimeStore:
                         state,
                         f"bid_level_{idx + 1}_stack_up",
                         "買盤",
-                        f"{symbol} 買{idx + 1} ({curr_bid_price}) 掛單量突然增加 {bid_level_delta:,}。",
+                        f"{symbol} 買{idx + 1}（{curr_bid_price}）突然補了 {bid_level_delta:,}，這口有人撐。",
                         min(0.95, 0.5 + abs(bid_level_delta) / max(prev_bid_size, 1)),
                         {"level": f"買{idx + 1}", "price": curr_bid_price, "delta": bid_level_delta},
                     )
@@ -759,7 +881,7 @@ class FugleRealtimeStore:
                         state,
                         f"bid_level_{idx + 1}_pull",
                         "買盤",
-                        f"{symbol} 買{idx + 1} ({curr_bid_price}) 掛單量快速抽離 {abs(bid_level_delta):,}。",
+                        f"{symbol} 買{idx + 1}（{curr_bid_price}）快速抽掉 {abs(bid_level_delta):,}，這口支撐在退。",
                         min(0.95, 0.5 + abs(bid_level_delta) / max(prev_bid_size, 1)),
                         {"level": f"買{idx + 1}", "price": curr_bid_price, "delta": bid_level_delta},
                     )
@@ -777,7 +899,7 @@ class FugleRealtimeStore:
                         state,
                         f"ask_level_{idx + 1}_stack_up",
                         "賣盤",
-                        f"{symbol} 賣{idx + 1} ({curr_ask_price}) 掛單量突然增加 {ask_level_delta:,}。",
+                        f"{symbol} 賣{idx + 1}（{curr_ask_price}）突然補了 {ask_level_delta:,}，這口壓力變重。",
                         min(0.95, 0.5 + abs(ask_level_delta) / max(prev_ask_size, 1)),
                         {"level": f"賣{idx + 1}", "price": curr_ask_price, "delta": ask_level_delta},
                     )
@@ -787,7 +909,7 @@ class FugleRealtimeStore:
                         state,
                         f"ask_level_{idx + 1}_pull",
                         "賣盤",
-                        f"{symbol} 賣{idx + 1} ({curr_ask_price}) 掛單量快速抽離 {abs(ask_level_delta):,}。",
+                        f"{symbol} 賣{idx + 1}（{curr_ask_price}）快速抽掉 {abs(ask_level_delta):,}，這口壓力在退。",
                         min(0.95, 0.5 + abs(ask_level_delta) / max(prev_ask_size, 1)),
                         {"level": f"賣{idx + 1}", "price": curr_ask_price, "delta": ask_level_delta},
                     )
@@ -802,18 +924,40 @@ class FugleRealtimeStore:
 
         prev_best_bid = prev["best_bid"]
         prev_best_ask = prev["best_ask"]
+        current_ask_2 = current_asks[1] if len(current_asks) > 1 else {}
+        current_bid_2 = current_bids[1] if len(current_bids) > 1 else {}
 
         if prev_best_ask is not None and trade_price >= prev_best_ask:
             prev_size = prev["ask_map"].get(trade_price)
             curr_size = curr["ask_map"].get(trade_price)
             if prev_size is not None and curr_size is not None and curr_size >= prev_size:
-                self._emit_signal(symbol, state, "ask_replenish_after_trade", "賣盤", f"{symbol} 成交價 {trade_price:.2f} 成交後，賣盤同價位未減反增，疑似補單。", 0.78, {"price": trade_price, "trade_size": trade_size})
+                self._emit_signal(symbol, state, "ask_replenish_after_trade", "賣盤", f"{symbol} {trade_price:.2f} 這口剛被吃掉，賣單馬上又補回來，上面有人鎖價。", 0.78, {"price": trade_price, "trade_size": trade_size})
+                self._record_price_defense(
+                    symbol,
+                    state,
+                    "ask",
+                    trade_price,
+                    trade_size,
+                    trade_price,
+                    safe_float(current_ask_2.get("price")),
+                    int(current_ask_2.get("size", 0) or 0),
+                )
 
         if prev_best_bid is not None and trade_price <= prev_best_bid:
             prev_size = prev["bid_map"].get(trade_price)
             curr_size = curr["bid_map"].get(trade_price)
             if prev_size is not None and curr_size is not None and curr_size >= prev_size:
-                self._emit_signal(symbol, state, "bid_replenish_after_trade", "買盤", f"{symbol} 成交價 {trade_price:.2f} 成交後，買盤同價位未減反增，疑似補單。", 0.78, {"price": trade_price, "trade_size": trade_size})
+                self._emit_signal(symbol, state, "bid_replenish_after_trade", "買盤", f"{symbol} {trade_price:.2f} 這口剛被打掉，買單馬上又補回來，下面有人硬接。", 0.78, {"price": trade_price, "trade_size": trade_size})
+                self._record_price_defense(
+                    symbol,
+                    state,
+                    "bid",
+                    trade_price,
+                    trade_size,
+                    trade_price,
+                    safe_float(current_bid_2.get("price")),
+                    int(current_bid_2.get("size", 0) or 0),
+                )
 
     def _update_opening_state(self, symbol: str, state: SymbolState, trade: dict[str, Any]) -> None:
         trade_price = float(trade.get("price") or 0)
@@ -822,7 +966,7 @@ class FugleRealtimeStore:
 
         if state.open_trade is None:
             state.open_trade = trade
-            self._emit_signal(symbol, state, "opening_trade", "開盤", f"{symbol} 已記錄第一筆開盤成交，價格 {trade_price:.2f}。", 0.5, {"open_price": trade_price}, cooldown_seconds=3600)
+            self._emit_signal(symbol, state, "opening_trade", "開盤", f"{symbol} 開盤第一筆出來了，價格 {trade_price:.2f}。", 0.5, {"open_price": trade_price}, cooldown_seconds=3600)
 
         state.session_high = trade_price if state.session_high is None else max(state.session_high, trade_price)
         state.session_low = trade_price if state.session_low is None else min(state.session_low, trade_price)
@@ -1398,8 +1542,9 @@ def render_signal_panel(symbol: str, signal_events: list[SignalEvent]) -> None:
     rows = [
         {
             "時間": event.created_at.strftime("%H:%M:%S"),
+            "提醒": get_trader_severity_label(event.score),
             "方向": event.side,
-            "類型": event.event_type,
+            "類型": get_signal_type_label(event.event_type),
             "強度": classify_severity(event.score),
             "內容": event.message,
         }
