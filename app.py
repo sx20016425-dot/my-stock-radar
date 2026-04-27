@@ -1366,42 +1366,24 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
         bid = item.get("bid")
         ask = item.get("ask")
         price = item.get("price")
-        side = "neutral"
+        side = "中性"
         if price is not None and ask is not None and price >= ask:
-            side = "outer"
+            side = "外盤"
         elif price is not None and bid is not None and price <= bid:
-            side = "inner"
+            side = "內盤"
 
         rows.append(
             {
                 "時間": format_fugle_time(item.get("time")),
+                "性質": side,
                 "買價": fmt_price(bid),
                 "賣價": fmt_price(ask),
                 "成交價格": fmt_price(price),
                 "數量": item.get("size"),
-                "_side": side,
             }
         )
 
-    df = pd.DataFrame(rows)
-
-    def style_trade_row(row: pd.Series) -> list[str]:
-        side = row.get("_side")
-        styles = [""] * len(row)
-        color = ""
-        if side == "outer":
-            color = "color: #ff4d4f; font-weight: 700;"
-        elif side == "inner":
-            color = "color: #34c759; font-weight: 700;"
-
-        columns = list(row.index)
-        for target_col in ("成交價格", "數量"):
-            if target_col in columns:
-                styles[columns.index(target_col)] = color
-        return styles
-
-    styled = df.style.apply(style_trade_row, axis=1).hide(axis="columns", subset=["_side"])
-    st.dataframe(styled, width="stretch", hide_index=True, height=TRADE_TAPE_HEIGHT)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, height=TRADE_TAPE_HEIGHT)
 
 
 def render_signal_panel(symbol: str, signal_events: list[SignalEvent]) -> None:
@@ -1695,7 +1677,7 @@ with st.sidebar:
     symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 6190")
     input_symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
     symbols, symbols_trimmed = enforce_stream_symbol_limit(input_symbols)
-    refresh_seconds = st.slider("刷新秒數", min_value=0.2, max_value=10.0, value=0.5, step=0.1)
+    refresh_seconds = st.slider("刷新秒數", min_value=0.1, max_value=10.0, value=0.2, step=0.1)
     source_mode = st.selectbox("資料源模式", ["自動", "Fugle", "示範資料"], index=0)
     st.caption("Fugle 免費方案有訂閱數限制，每個股票代碼會同時使用 books 與 trades 兩個頻道。刷新過快可能讓 Streamlit Cloud 比較吃資源。")
     st.caption(f"目前預設最多監控 {MAX_STREAM_SYMBOLS} 檔，約佔用 {MAX_STREAM_SYMBOLS * 2} 個訂閱數。")
