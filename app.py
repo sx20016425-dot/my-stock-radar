@@ -191,6 +191,12 @@ def is_tw_regular_session_trade(trade_time: Any) -> bool:
     return 90000 <= hhmmss <= 133000
 
 
+def is_tw_regular_session_now() -> bool:
+    current = now_taipei()
+    hhmmss = current.hour * 10000 + current.minute * 100 + current.second
+    return 90000 <= hhmmss <= 133000
+
+
 def format_benchmark_time(value: Any) -> str:
     if value in (None, ""):
         return "-"
@@ -681,6 +687,8 @@ class FugleRealtimeStore:
         extra: dict[str, Any] | None = None,
         cooldown_seconds: int = 8,
     ) -> None:
+        if not is_tw_regular_session_now():
+            return
         now_ts = now_taipei().timestamp()
         cooldown_key = f"{event_type}:{side}"
         if now_ts - state.signal_cooldowns.get(cooldown_key, 0) < cooldown_seconds:
@@ -872,6 +880,8 @@ class FugleRealtimeStore:
 
             if channel == "books":
                 state.book = data
+                if not is_tw_regular_session_now():
+                    return
                 summary = summarise_book(data)
                 if summary:
                     state.book_history.append(summary)
@@ -1396,6 +1406,9 @@ def render_trade_tape(trades: list[dict[str, Any]]) -> None:
 
 def render_signal_panel(symbol: str, signal_events: list[SignalEvent]) -> None:
     st.markdown(f'<div class="panel-title">{symbol} 異常訊號監控</div>', unsafe_allow_html=True)
+    if not is_tw_regular_session_now():
+        render_empty_box("目前尚未開盤，異常訊號監控會在 09:00 後開始。", tall=True)
+        return
     if not signal_events:
         render_empty_box("目前尚未偵測到明顯的五檔或成交異常。", tall=True)
         return
@@ -1485,6 +1498,9 @@ def render_opening_panel(symbol: str, symbol_data: dict[str, Any]) -> None:
 
 def render_decision_panel(symbol: str, symbol_data: dict[str, Any], index_events: list[SignalEvent]) -> None:
     st.markdown(f'<div class="panel-title">{symbol} 綜合判斷</div>', unsafe_allow_html=True)
+    if not is_tw_regular_session_now():
+        render_empty_box("目前尚未開盤，綜合判斷會在 09:00 後開始。", medium=True)
+        return
     score, reasons = calc_symbol_signal_score(symbol_data, index_events)
     bias = score_to_bias(score)
     cols = st.columns(3)
