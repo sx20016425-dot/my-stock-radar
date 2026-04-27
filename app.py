@@ -30,7 +30,7 @@ except ImportError:
 
 
 TAIPEI_TZ = zoneinfo.ZoneInfo("Asia/Taipei")
-DEFAULT_SYMBOLS = ["2330", "2317"]
+DEFAULT_SYMBOLS = ["2330"]
 MAX_RECENT_TRADES = 50
 MAX_BOOK_HISTORY = 300
 MAX_TRADE_HISTORY = 2000
@@ -167,6 +167,28 @@ def format_fugle_time(value: Any) -> str:
         return datetime.fromtimestamp(timestamp, TAIPEI_TZ).strftime("%H:%M:%S")
     except Exception:
         return str(value)
+
+
+def fugle_timestamp_to_taipei_datetime(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        timestamp = float(value)
+        if timestamp > 10_000_000_000_000:
+            timestamp /= 1_000_000
+        elif timestamp > 10_000_000_000:
+            timestamp /= 1_000
+        return datetime.fromtimestamp(timestamp, TAIPEI_TZ)
+    except Exception:
+        return None
+
+
+def is_tw_regular_session_trade(trade_time: Any) -> bool:
+    trade_dt = fugle_timestamp_to_taipei_datetime(trade_time)
+    if trade_dt is None:
+        return False
+    hhmmss = trade_dt.hour * 10000 + trade_dt.minute * 100 + trade_dt.second
+    return 90000 <= hhmmss <= 133000
 
 
 def format_benchmark_time(value: Any) -> str:
@@ -861,6 +883,8 @@ class FugleRealtimeStore:
                 serial = data.get("serial")
                 if serial != state.last_processed_trade_serial:
                     state.last_processed_trade_serial = serial
+                    if not is_tw_regular_session_trade(data.get("time")):
+                        return
                     state.trades.appendleft(data)
                     state.trade_history.append(
                         {
@@ -1652,7 +1676,7 @@ st.caption("使用 Streamlit 製作的台股五檔委買委賣、即時成交、
 
 with st.sidebar:
     st.header("監控設定")
-    symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 2317")
+    symbols_raw = st.text_input("股票代碼", value=", ".join(DEFAULT_SYMBOLS), help="請用逗號分隔，例如：2330, 6190")
     input_symbols = normalize_symbols(symbols_raw) or DEFAULT_SYMBOLS
     symbols, symbols_trimmed = enforce_stream_symbol_limit(input_symbols)
     refresh_seconds = st.slider("刷新秒數", min_value=0.2, max_value=10.0, value=0.5, step=0.1)
