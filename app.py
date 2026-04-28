@@ -1024,33 +1024,31 @@ class FugleRealtimeStore:
 
             if channel == "books":
                 state.book = data
-                if not is_tw_regular_session_now():
-                    return
-                summary = summarise_book(data)
-                if summary:
-                    state.book_history.append(summary)
-                    self.persist_book_summary(symbol, summary)
-                    self._analyse_order_book_change(symbol, state, state.last_trade)
+                if is_tw_regular_session_now():
+                    summary = summarise_book(data)
+                    if summary:
+                        state.book_history.append(summary)
+                        self.persist_book_summary(symbol, summary)
+                        self._analyse_order_book_change(symbol, state, state.last_trade)
 
             elif channel == "trades":
                 state.last_trade = data
                 serial = data.get("serial")
                 if serial != state.last_processed_trade_serial:
                     state.last_processed_trade_serial = serial
-                    if not is_tw_regular_session_trade(data.get("time")):
-                        return
-                    state.trades.appendleft(data)
-                    state.trade_history.append(
-                        {
-                            "time": float(data.get("time") or now_taipei().timestamp()),
-                            "price": float(data.get("price") or 0),
-                            "size": int(data.get("size") or 0),
-                            "serial": serial,
-                        }
-                    )
-                    self.persist_trade_tick(symbol, data)
-                    self._update_opening_state(symbol, state, data)
-                    self._analyse_order_book_change(symbol, state, data)
+                    if is_tw_regular_session_trade(data.get("time")):
+                        state.trades.appendleft(data)
+                        state.trade_history.append(
+                            {
+                                "time": float(data.get("time") or now_taipei().timestamp()),
+                                "price": float(data.get("price") or 0),
+                                "size": int(data.get("size") or 0),
+                                "serial": serial,
+                            }
+                        )
+                        self.persist_trade_tick(symbol, data)
+                        self._update_opening_state(symbol, state, data)
+                        self._analyse_order_book_change(symbol, state, data)
 
     def _safe_subscribe(self, channel: str, symbol: str) -> bool:
         if self.stock is None:
