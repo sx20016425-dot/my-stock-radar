@@ -1065,6 +1065,18 @@ class FugleRealtimeStore:
             self.auth_ready.clear()
             return False
 
+    def _safe_unsubscribe(self, channel: str, symbol: str) -> bool:
+        if self.stock is None or not hasattr(self.stock, "unsubscribe"):
+            return False
+        try:
+            self.stock.unsubscribe({"channel": channel, "symbol": symbol})
+            return True
+        except Exception as exc:
+            with self.lock:
+                self.error_message = f"退訂失敗：{channel} {symbol} - {exc}"
+                self.last_status_message = "送出退訂時發生例外"
+            return False
+
     def _flush_pending_subscriptions(self) -> None:
         with self.lock:
             if not self.connected or not self.authenticated:
@@ -1079,11 +1091,30 @@ class FugleRealtimeStore:
             else:
                 break
 
+    def _sync_subscriptions(self, symbols: list[str]) -> None:
+        desired = {(channel, symbol) for symbol in symbols for channel in ("books", "trades")}
+        with self.lock:
+            current = set(self.subscriptions)
+            pending = set(self.pending_subscriptions)
+
+        obsolete = (current | pending) - desired
+        for channel, symbol in obsolete:
+            with self.lock:
+                self.pending_subscriptions.discard((channel, symbol))
+            if (channel, symbol) in current:
+                if self._safe_unsubscribe(channel, symbol):
+                    with self.lock:
+                        self.subscriptions.discard((channel, symbol))
+                else:
+                    with self.lock:
+                        self.subscriptions.discard((channel, symbol))
+
     def subscribe_symbols(self, symbols: list[str]) -> None:
         if not self.api_key or WebSocketClient is None:
             return
 
         self.ensure_started()
+        self._sync_subscriptions(symbols)
         for symbol in symbols:
             for channel in ("books", "trades"):
                 key = (channel, symbol)
