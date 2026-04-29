@@ -43,9 +43,11 @@ LEVEL_ABS_DELTA_THRESHOLD = 300
 LEVEL_RATIO_UP_THRESHOLD = 1.8
 LEVEL_RATIO_DOWN_THRESHOLD = 0.45
 MAX_STREAM_SYMBOLS = 2
-DEFENSE_WINDOW_SECONDS = 45
-DEFENSE_MIN_RETESTS = 3
+DEFENSE_WINDOW_SECONDS = 60
+DEFENSE_MIN_RETESTS = 4
 DEFENSE_SECOND_LEVEL_SIZE = 300
+DEFENSE_MIN_TOTAL_TRADE_SIZE = 4
+DEFENSE_WALL_TO_VOLUME_RATIO = 0.8
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_LOG_DIR = APP_DIR / "data_logs"
@@ -741,6 +743,7 @@ class FugleRealtimeStore:
         trade_price: float,
         trade_size: int,
         defense_price: float,
+        wall_size: int,
         second_price: float | None,
         second_size: int,
     ) -> None:
@@ -752,6 +755,7 @@ class FugleRealtimeStore:
                 "trade_price": trade_price,
                 "trade_size": trade_size,
                 "defense_price": defense_price,
+                "wall_size": wall_size,
                 "second_price": second_price,
                 "second_size": second_size,
             }
@@ -773,25 +777,34 @@ class FugleRealtimeStore:
 
         second_level_support_count = sum(1 for item in matched if int(item.get("second_size") or 0) >= DEFENSE_SECOND_LEVEL_SIZE)
         total_trade_size = sum(int(item.get("trade_size") or 0) for item in matched)
+        latest_wall_size = int(matched[-1].get("wall_size") or 0)
+        latest_second_size = int(matched[-1].get("second_size") or 0)
+        defense_shares = latest_wall_size + latest_second_size
+        defense_ratio = defense_shares / max(total_trade_size, 1)
+        if total_trade_size < DEFENSE_MIN_TOTAL_TRADE_SIZE or defense_ratio < DEFENSE_WALL_TO_VOLUME_RATIO:
+            return
 
         if defense_side == "ask":
             still_blocked = max(float(item.get("trade_price") or 0) for item in matched) <= defense_price
             if still_blocked:
                 extra_guard = ""
                 if second_level_support_count >= 2 and second_price is not None:
-                    extra_guard = f"，且賣二 {second_price:.2f} 持續有大單防守"
-                score = min(0.95, 0.62 + 0.07 * max(0, len(matched) - DEFENSE_MIN_RETESTS) + (0.08 if second_level_support_count >= 2 else 0))
+                    extra_guard = f"，賣二 {second_price:.2f} 也在一起守"
+                score = min(0.95, 0.6 + 0.05 * max(0, len(matched) - DEFENSE_MIN_RETESTS) + min(0.15, defense_ratio * 0.08))
                 self._emit_signal(
                     symbol,
                     state,
                     "ask_defense_hold",
                     "賣盤",
-                    f"{symbol} {defense_price:.2f} 這口價一直被買，但 {DEFENSE_WINDOW_SECONDS} 秒內連打 {len(matched)} 次、累計 {total_trade_size:,} 股還是過不去{extra_guard}，空方守很兇，短線像高不過高。",
+                    f"{symbol} {defense_price:.2f} 這口 {DEFENSE_WINDOW_SECONDS} 秒內連打 {len(matched)} 次、累計成交 {total_trade_size:,}，但賣一賣二還掛著 {defense_shares:,}{extra_guard}，空方守得住，短線像高不過高。",
                     score,
                     {
                         "defense_price": defense_price,
                         "retests": len(matched),
                         "total_trade_size": total_trade_size,
+                        "wall_size": latest_wall_size,
+                        "defense_shares": defense_shares,
+                        "defense_ratio": round(defense_ratio, 2),
                         "second_price": second_price,
                         "second_size": second_size,
                     },
@@ -802,19 +815,22 @@ class FugleRealtimeStore:
             if still_blocked:
                 extra_guard = ""
                 if second_level_support_count >= 2 and second_price is not None:
-                    extra_guard = f"，且買二 {second_price:.2f} 持續有大單防守"
-                score = min(0.95, 0.62 + 0.07 * max(0, len(matched) - DEFENSE_MIN_RETESTS) + (0.08 if second_level_support_count >= 2 else 0))
+                    extra_guard = f"，買二 {second_price:.2f} 也在一起守"
+                score = min(0.95, 0.6 + 0.05 * max(0, len(matched) - DEFENSE_MIN_RETESTS) + min(0.15, defense_ratio * 0.08))
                 self._emit_signal(
                     symbol,
                     state,
                     "bid_defense_hold",
                     "買盤",
-                    f"{symbol} {defense_price:.2f} 這口價一直被打，但 {DEFENSE_WINDOW_SECONDS} 秒內連測 {len(matched)} 次、累計 {total_trade_size:,} 股還是跌不破{extra_guard}，多方撐很硬，短線像低不過低。",
+                    f"{symbol} {defense_price:.2f} 這口 {DEFENSE_WINDOW_SECONDS} 秒內連測 {len(matched)} 次、累計成交 {total_trade_size:,}，但買一買二還掛著 {defense_shares:,}{extra_guard}，多方撐得住，短線像低不過低。",
                     score,
                     {
                         "defense_price": defense_price,
                         "retests": len(matched),
                         "total_trade_size": total_trade_size,
+                        "wall_size": latest_wall_size,
+                        "defense_shares": defense_shares,
+                        "defense_ratio": round(defense_ratio, 2),
                         "second_price": second_price,
                         "second_size": second_size,
                     },
@@ -939,6 +955,7 @@ class FugleRealtimeStore:
                     trade_price,
                     trade_size,
                     trade_price,
+                    int(curr_size or 0),
                     safe_float(current_ask_2.get("price")),
                     int(current_ask_2.get("size", 0) or 0),
                 )
@@ -955,6 +972,7 @@ class FugleRealtimeStore:
                     trade_price,
                     trade_size,
                     trade_price,
+                    int(curr_size or 0),
                     safe_float(current_bid_2.get("price")),
                     int(current_bid_2.get("size", 0) or 0),
                 )
